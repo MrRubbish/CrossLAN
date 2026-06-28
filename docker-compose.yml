@@ -1,0 +1,15 @@
+services:
+  crosslan:
+    build: .
+    network_mode: host
+    environment:
+      NODE_ENV: production
+      PORT: 8080
+      PUBLIC_ORIGIN: http://localhost:8080
+      MDNS_SERVICE_NAME: CrossLAN
+      CROSSLAN_SAVE_DIR: /data/CrossLAN
+      CROSSLAN_CONFIG: /config/crosslan.json
+    volumes:
+      - ${USERPROFILE}/Downloads/CrossLAN:/data/CrossLAN
+      - ./docker-config:/config
+    restart: unless-stopped

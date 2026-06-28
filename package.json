@@ -1,0 +1,16 @@
+{
+  "name": "crosslan",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Low-resource LAN WebRTC file transfer PWA.",
+  "scripts": {
+    "dev": "concurrently \"npm --workspace server run dev\" \"npm --workspace client run dev\"",
+    "build": "npm --workspace client run build",
+    "start": "npm --workspace server start",
+    "check": "npm --workspace client run typecheck && npm --workspace server run check"
+  },
+  "workspaces": ["client", "server"],
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}

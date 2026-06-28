@@ -1,0 +1,7 @@
+node_modules/
+client/dist/
+*.log
+.probe-*.log
+.selftest-*.log
+.env
+.git-broken/

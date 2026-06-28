@@ -1,0 +1,28 @@
+{
+  "name": "@crosslan/client",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "typecheck": "vue-tsc --noEmit"
+  },
+  "dependencies": {
+    "@vitejs/plugin-vue": "^5.0.5",
+    "idb": "^8.0.0",
+    "nosleep.js": "^0.12.0",
+    "streamsaver": "^2.0.6",
+    "vue": "^3.4.29",
+    "vite": "^5.3.1",
+    "vite-plugin-pwa": "^0.20.0",
+    "workbox-precaching": "^7.1.0"
+  },
+  "devDependencies": {
+    "@unocss/reset": "^0.61.0",
+    "typescript": "^5.4.5",
+    "unocss": "^0.61.0",
+    "vue-tsc": "^2.0.22"
+  }
+}
