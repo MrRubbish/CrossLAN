@@ -1,10 +1,11 @@
-﻿import express from 'express';
+import express from 'express';
 import http, { createServer } from 'node:http';
 import https from 'node:https';
 import { constants, createWriteStream } from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { PassThrough, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
@@ -24,14 +25,15 @@ const storageSettings = { saveDir: defaultSaveDir };
 const DIRECT_UPLOAD_LOG_INTERVAL_MS = 30000;
 const RELAY_UPLOAD_LOG_INTERVAL_MS = 5000;
 const DIRECT_UPLOAD_WRITE_BUFFER = 8 * 1024 * 1024;
-const relayDir = process.env.CROSSLAN_RELAY_DIR || path.join(os.tmpdir(), 'crosslan-relay');
-const RELAY_TTL_MS = 2 * 60 * 60 * 1000;
+const RELAY_SESSION_TTL_MS = Number(process.env.CROSSLAN_RELAY_SESSION_TTL_MS || 5 * 60 * 1000);
+const RELAY_BUFFER_BYTES = Math.max(Number(process.env.CROSSLAN_RELAY_BUFFER_MB || 128), 1) * 1024 * 1024;
 const app = express();
 const server = createServer(app);
 let activeServer = server;
 let redirectServer = null;
 const wss = new WebSocketServer({ noServer: true });
 const networkProber = new NetworkProber();
+const relaySessions = new Map();
 const mdns = new MdnsDiscovery({
   port,
   serviceName: process.env.MDNS_SERVICE_NAME || 'CrossLAN'
@@ -131,101 +133,126 @@ app.post('/api/transfers/direct', async (req, res) => {
   }
 });
 
-app.post('/api/transfers/relay', async (req, res) => {
-  let targetPath;
+app.post('/api/transfers/relay/:transferId', async (req, res) => {
+  const transferId = sanitizePathSegment(req.params.transferId || req.header('x-crosslan-transfer-id') || req.query.transferId || '');
+  const fileName = sanitizeFileName(decodeFileName(String(req.header('x-crosslan-file-name') || req.query.name || 'download.bin')));
+  const expectedSize = Number(req.header('x-crosslan-file-size') || req.query.size || 0);
   let bytesWritten = 0;
   let lastLogAt = Date.now();
   let lastLoggedBytes = 0;
   const startedAt = Date.now();
-  const transferId = String(req.header('x-crosslan-transfer-id') || req.query.transferId || '');
+
+  if (!transferId) {
+    res.status(400).json({ ok: false, message: 'transferId is required.' });
+    return;
+  }
+
+  const session = getOrCreateRelaySession(transferId, fileName, expectedSize);
+  if (session.uploadStarted) {
+    res.status(409).json({ ok: false, message: 'Relay upload already started.' });
+    return;
+  }
+
+  session.uploadStarted = true;
+  session.fileName = fileName;
+  session.expectedSize = expectedSize;
+  clearRelaySessionTimer(session);
+  console.log('CrossLAN relay stream upload started: ' + fileName + ' transferId=' + transferId + ' size=' + formatBytes(expectedSize));
+
+  req.on('data', chunk => {
+    bytesWritten += chunk.length;
+    session.bytesUploaded = bytesWritten;
+    const now = Date.now();
+    if (now - lastLogAt > RELAY_UPLOAD_LOG_INTERVAL_MS) {
+      const intervalBytes = bytesWritten - lastLoggedBytes;
+      const intervalSeconds = Math.max((now - lastLogAt) / 1000, 0.001);
+      const elapsedSeconds = Math.max((now - startedAt) / 1000, 0.001);
+      lastLogAt = now;
+      lastLoggedBytes = bytesWritten;
+      console.log('CrossLAN relay stream upload progress: ' + fileName + ' transferId=' + transferId + ' ' + formatBytes(bytesWritten) + ' / ' + formatBytes(expectedSize) + ' @ ' + formatBytes(intervalBytes / intervalSeconds) + '/s avg ' + formatBytes(bytesWritten / elapsedSeconds) + '/s');
+    }
+  });
+  req.on('aborted', () => {
+    console.warn('CrossLAN relay stream upload aborted: ' + fileName + ' transferId=' + transferId + ' written=' + formatBytes(bytesWritten));
+    failRelaySession(transferId, 'Sender aborted upload.');
+  });
+  req.on('error', error => {
+    console.warn('CrossLAN relay stream request error: ' + fileName + ' transferId=' + transferId + ' ' + (error instanceof Error ? error.message : error));
+    failRelaySession(transferId, 'Sender upload error.');
+  });
 
   try {
-    await ensureWritableDirectory(relayDir);
-    const relayId = createRelayId();
-    const fileName = sanitizeFileName(decodeFileName(String(req.header('x-crosslan-file-name') || req.query.name || 'download.bin')));
-    const expectedSize = Number(req.header('x-crosslan-file-size') || req.query.size || 0);
-    const dir = path.join(relayDir, relayId);
-    await fs.mkdir(dir, { recursive: true });
-    targetPath = path.join(dir, fileName);
-    console.log('CrossLAN relay upload started: ' + fileName + ' transferId=' + transferId + ' relayId=' + relayId + ' size=' + formatBytes(expectedSize) + ' -> ' + targetPath);
-
-    req.on('data', chunk => {
-      bytesWritten += chunk.length;
-      const now = Date.now();
-      if (now - lastLogAt > RELAY_UPLOAD_LOG_INTERVAL_MS) {
-        const intervalBytes = bytesWritten - lastLoggedBytes;
-        const intervalSeconds = Math.max((now - lastLogAt) / 1000, 0.001);
-        const elapsedSeconds = Math.max((now - startedAt) / 1000, 0.001);
-        lastLogAt = now;
-        lastLoggedBytes = bytesWritten;
-        console.log('CrossLAN relay upload progress: ' + fileName + ' transferId=' + transferId + ' ' + formatBytes(bytesWritten) + ' / ' + formatBytes(expectedSize) + ' @ ' + formatBytes(intervalBytes / intervalSeconds) + '/s avg ' + formatBytes(bytesWritten / elapsedSeconds) + '/s');
-      }
-    });
-    req.on('aborted', () => {
-      console.warn('CrossLAN relay upload aborted: ' + fileName + ' transferId=' + transferId + ' written=' + formatBytes(bytesWritten));
-    });
-    req.on('error', error => {
-      console.warn('CrossLAN relay request error: ' + fileName + ' transferId=' + transferId + ' ' + (error instanceof Error ? error.message : error));
-    });
-
-    await pipeline(req, createWriteStream(targetPath, { flags: 'wx', highWaterMark: DIRECT_UPLOAD_WRITE_BUFFER }));
-
+    await pipeline(req, session.stream);
     if (expectedSize > 0 && bytesWritten !== expectedSize) {
-      await fs.rm(dir, { recursive: true, force: true });
-      console.warn('CrossLAN relay upload size mismatch: ' + fileName + ' transferId=' + transferId + ' ' + bytesWritten + '/' + expectedSize);
+      failRelaySession(transferId, `Upload size mismatch: ${bytesWritten}/${expectedSize}`);
       res.status(400).json({ ok: false, message: `Upload size mismatch: ${bytesWritten}/${expectedSize}` });
       return;
     }
 
+    session.uploadComplete = true;
     const elapsedSeconds = Math.max((Date.now() - startedAt) / 1000, 0.001);
-    const downloadUrl = `/api/transfers/relay/${encodeURIComponent(relayId)}/${encodeURIComponent(fileName)}`;
-    console.log('CrossLAN relay upload completed: ' + fileName + ' transferId=' + transferId + ' relayId=' + relayId + ' bytes=' + formatBytes(bytesWritten) + ' avg=' + formatBytes(bytesWritten / elapsedSeconds) + '/s url=' + downloadUrl);
-
-    const timer = setTimeout(() => {
-      console.log('CrossLAN relay cleanup expired: relayId=' + relayId + ' file=' + fileName);
-      void fs.rm(dir, { recursive: true, force: true }).catch(() => {});
-    }, RELAY_TTL_MS);
-    timer.unref?.();
-
-    res.json({
-      ok: true,
-      relayId,
-      fileName,
-      bytesWritten,
-      downloadUrl
-    });
+    console.log('CrossLAN relay stream upload completed: ' + fileName + ' transferId=' + transferId + ' bytes=' + formatBytes(bytesWritten) + ' avg=' + formatBytes(bytesWritten / elapsedSeconds) + '/s');
+    scheduleRelaySessionCleanup(session, 30000);
+    res.json({ ok: true, fileName, bytesWritten });
   } catch (error) {
-    console.error('CrossLAN relay upload failed: transferId=' + transferId + ' path=' + (targetPath || 'unknown') + ' ' + (error instanceof Error ? error.message : error));
-    if (targetPath) await fs.rm(path.dirname(targetPath), { recursive: true, force: true }).catch(() => {});
-    res.status(500).json({ ok: false, message: error instanceof Error ? error.message : 'Relay upload failed.' });
+    if (!session.failed) failRelaySession(transferId, error instanceof Error ? error.message : 'Relay stream upload failed.');
+    console.error('CrossLAN relay stream upload failed: transferId=' + transferId + ' file=' + fileName + ' ' + (error instanceof Error ? error.message : error));
+    if (!res.headersSent) res.status(500).json({ ok: false, message: error instanceof Error ? error.message : 'Relay stream upload failed.' });
   }
 });
 
-app.get('/api/transfers/relay/:relayId/:fileName', async (req, res) => {
-  const relayId = sanitizePathSegment(req.params.relayId);
+app.get('/api/transfers/relay/:transferId/:fileName', async (req, res) => {
+  const transferId = sanitizePathSegment(req.params.transferId);
   const fileName = sanitizeFileName(req.params.fileName);
-  const targetPath = path.join(relayDir, relayId, fileName);
+  const expectedSize = Number(req.query.size || 0);
+  const session = getOrCreateRelaySession(transferId, fileName, expectedSize);
 
-  try {
-    await fs.access(targetPath, constants.R_OK);
-  } catch (error) {
-    const code = getErrorCode(error);
-    console.warn('CrossLAN relay download missing: relayId=' + relayId + ' file=' + fileName + ' path=' + targetPath + ' code=' + code);
-    res.status(404).json({ ok: false, message: 'Relay file not found or expired.' });
+  if (session.downloadStarted) {
+    res.status(409).json({ ok: false, message: 'Relay download already started.' });
     return;
   }
 
-  console.log('CrossLAN relay download requested: relayId=' + relayId + ' file=' + fileName + ' ip=' + normalizeIp(req.socket.remoteAddress));
-  res.on('finish', () => {
-    console.log('CrossLAN relay download finished: relayId=' + relayId + ' file=' + fileName + ' status=' + res.statusCode);
-  });
-  res.download(targetPath, fileName, error => {
-    if (!error) return;
-    console.warn('CrossLAN relay download failed: relayId=' + relayId + ' file=' + fileName + ' path=' + targetPath + ' code=' + getErrorCode(error) + ' message=' + error.message);
-    if (!res.headersSent) {
-      res.status(500).json({ ok: false, message: 'Relay download failed.' });
+  session.downloadStarted = true;
+  session.fileName = fileName;
+  if (expectedSize > 0) session.expectedSize = expectedSize;
+  clearRelaySessionTimer(session);
+  console.log('CrossLAN relay stream download opened: transferId=' + transferId + ' file=' + fileName + ' ip=' + normalizeIp(req.socket.remoteAddress));
+
+  res.setHeader('Content-Type', 'application/octet-stream');
+  res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeRFC5987(fileName)}`);
+  if (session.expectedSize > 0) res.setHeader('Content-Length', String(session.expectedSize));
+  res.setHeader('Cache-Control', 'no-store');
+
+  let bytesDownloaded = 0;
+  let lastBroadcastAt = 0;
+  const progressTap = new Transform({
+    transform(chunk, _encoding, callback) {
+      bytesDownloaded += chunk.length;
+      session.bytesDownloaded = bytesDownloaded;
+      const now = Date.now();
+      if (now - lastBroadcastAt > 500 || (session.expectedSize > 0 && bytesDownloaded >= session.expectedSize)) {
+        lastBroadcastAt = now;
+        broadcastRelayProgress({ type: 'relay-transfer-progress', transferId, fileName, bytesTransferred: bytesDownloaded, totalBytes: session.expectedSize });
+      }
+      callback(null, chunk);
     }
   });
+  res.on('close', () => {
+    console.log('CrossLAN relay stream download closed: transferId=' + transferId + ' file=' + fileName + ' downloaded=' + formatBytes(bytesDownloaded) + ' status=' + res.statusCode);
+    if (!session.uploadComplete && bytesDownloaded < session.expectedSize) {
+      failRelaySession(transferId, 'Receiver closed download.');
+    } else {
+      scheduleRelaySessionCleanup(session, 30000);
+    }
+  });
+
+  try {
+    await pipeline(session.stream, progressTap, res);
+    console.log('CrossLAN relay stream download finished: transferId=' + transferId + ' file=' + fileName + ' bytes=' + formatBytes(bytesDownloaded));
+  } catch (error) {
+    if (!session.failed) failRelaySession(transferId, error instanceof Error ? error.message : 'Relay stream download failed.');
+    console.warn('CrossLAN relay stream download failed: transferId=' + transferId + ' file=' + fileName + ' ' + (error instanceof Error ? error.message : error));
+  }
 });
 app.get('/api/network/probe/quick', async (req, res) => {
   res.json(await networkProber.quickProbe());
@@ -347,6 +374,14 @@ function closeServer(targetServer) {
   return new Promise(resolve => targetServer.close(resolve));
 }
 
+function broadcastRelayProgress(payload) {
+  if (!payload.transferId) return;
+  const message = JSON.stringify(payload);
+  for (const client of wss.clients) {
+    if (client.readyState === client.OPEN) client.send(message);
+  }
+}
+
 function broadcastDirectProgress(payload) {
   if (!payload.transferId) return;
   const message = JSON.stringify(payload);
@@ -355,6 +390,59 @@ function broadcastDirectProgress(payload) {
   }
 }
 
+function getOrCreateRelaySession(transferId, fileName, expectedSize) {
+  let session = relaySessions.get(transferId);
+  if (session) return session;
+
+  session = {
+    transferId,
+    fileName,
+    expectedSize,
+    stream: new PassThrough({ highWaterMark: RELAY_BUFFER_BYTES }),
+    uploadStarted: false,
+    downloadStarted: false,
+    uploadComplete: false,
+    failed: false,
+    bytesUploaded: 0,
+    bytesDownloaded: 0,
+    timer: null,
+    createdAt: Date.now()
+  };
+  relaySessions.set(transferId, session);
+  scheduleRelaySessionCleanup(session, RELAY_SESSION_TTL_MS);
+  console.log('CrossLAN relay stream session created: transferId=' + transferId + ' file=' + fileName + ' buffer=' + formatBytes(RELAY_BUFFER_BYTES));
+  return session;
+}
+
+function failRelaySession(transferId, reason) {
+  const session = relaySessions.get(transferId);
+  if (!session || session.failed) return;
+  session.failed = true;
+  console.warn('CrossLAN relay stream session failed: transferId=' + transferId + ' reason=' + reason);
+  session.stream.destroy(new Error(reason));
+  relaySessions.delete(transferId);
+  broadcastRelayProgress({ type: 'relay-transfer-error', transferId, fileName: session.fileName, message: reason });
+}
+
+function scheduleRelaySessionCleanup(session, delayMs) {
+  clearRelaySessionTimer(session);
+  session.timer = setTimeout(() => {
+    console.log('CrossLAN relay stream session cleanup: transferId=' + session.transferId + ' uploaded=' + formatBytes(session.bytesUploaded) + ' downloaded=' + formatBytes(session.bytesDownloaded));
+    session.stream.destroy();
+    relaySessions.delete(session.transferId);
+  }, delayMs);
+  session.timer.unref?.();
+}
+
+function clearRelaySessionTimer(session) {
+  if (!session.timer) return;
+  clearTimeout(session.timer);
+  session.timer = null;
+}
+
+function encodeRFC5987(value) {
+  return encodeURIComponent(value).replace(/['()]/g, escape).replace(/\*/g, '%2A');
+}
 async function loadStorageSettings() {
   try {
     const raw = await fs.readFile(configPath, 'utf8');
@@ -403,9 +491,6 @@ async function getAvailablePath(dir, fileName) {
   throw new Error('Too many files with the same name.');
 }
 
-function createRelayId() {
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-}
 
 function sanitizePathSegment(value) {
   return String(value || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 80);

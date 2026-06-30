@@ -43,7 +43,7 @@
             </button>
           </div>
 
-          <input ref="fileInput" type="file" accept="*/*" class="hidden" @change="handleFilePicked" />
+          <input ref="fileInput" type="file" accept="*/*" multiple class="hidden" @change="handleFilePicked" />
         </section>
 
         <aside class="space-y-4">
@@ -126,13 +126,18 @@ import type { BandwidthMode, DeviceRecord, FileMeta, LocalIdentity, SignalingMes
 
 const DIRECT_SAVE_THRESHOLD = 512 * 1024 * 1024;
 const PHONE_RELAY_THRESHOLD = 8 * 1024 * 1024;
+const SMALL_BATCH_MAX_TOTAL = 64 * 1024 * 1024;
+const SMALL_BATCH_MAX_FILE = PHONE_RELAY_THRESHOLD;
 const ACCEPT_TIMEOUT_MS = 120000;
+const ZIP32_MAX = 0xffffffff;
+const ZIP_CHUNK_SIZE = 4 * 1024 * 1024;
+const textEncoder = new TextEncoder();
 const messages = {
   zh: {
-    local: '本机', connecting: '正在连接信令服务', online: '在线', offline: '离线', devices: '局域网设备', selectTarget: '选择目标设备', refresh: '刷新', emptyDevices: '在同一局域网的另一台设备打开 CrossLAN，它会出现在这里。', deviceId: '设备 ID', lastSeen: '最后在线', transfers: '传输', noTransfers: '还没有传输任务。', cancel: '取消', send: '发送', receive: '接收', openDownload: '打开下载', storage: '存储', saveDirectory: 'PC 保存目录', storageHint: '发送到这台 PC 的大文件会直接保存到这里。Docker 通常映射到 /data/CrossLAN。', savePath: '保存路径', network: '网络', speedLimit: '速度限制', unlimited: '不限速', manual: '手动', auto: '自动', diagnostics: '诊断', recentEvents: '最近事件', clear: '清空', noDebugEvents: '暂无诊断事件。', direct: '直存', browserDownload: '浏览器下载', p2p: 'P2P', measuring: '测速中', receivePrompt: '接收', receiveLargePrompt: '接收大文件', receiverRejected: '接收方已拒绝文件。', waitingSender: '已接受，等待发送方...', waitingLink: '已接受，等待下载链接...', receiveComplete: '接收完成', savingDisk: '正在写入 PC 磁盘...', downloadReady: '下载已准备好。如果没有自动打开，请点“打开下载”。', sentDownloadManager: '已交给浏览器下载管理器。', waitConfirm: '等待对方确认...', waitPhoneConfirm: '等待手机确认...', savedToPc: '已保存到 PC', preparingPhone: '正在为手机准备浏览器下载...', linkSentPhone: '下载链接已发送到手机。', loadStorage: '正在读取保存目录...', loadStorageFailed: '读取保存目录失败。', saveStorageFailed: '保存目录失败。', current: '当前', saved: '已保存', parseFailed: '无法解析服务器响应。', uploadHttpFailed: '上传失败', uploadNetworkFailed: '上传失败：无法连接到 PC 服务。', cancelled: '传输已取消。', remoteCancelled: '对方已取消传输。', confirmTimeout: '等待对方确认超时。', failed: '传输失败。', duplicateSending: '这个文件正在传输中，已沿用现有任务。', duplicateIncoming: '相同文件已有接收任务，已忽略重复请求。', receivingRelay: '发送方正在上传到临时下载区...'
+    local: '本机', connecting: '正在连接信令服务', online: '在线', offline: '离线', devices: '局域网设备', selectTarget: '选择目标设备', refresh: '刷新', emptyDevices: '在同一局域网的另一台设备打开 CrossLAN，它会出现在这里。', deviceId: '设备 ID', lastSeen: '最后在线', transfers: '传输', noTransfers: '还没有传输任务。', cancel: '取消', send: '发送', receive: '接收', openDownload: '打开下载', storage: '存储', saveDirectory: 'PC 保存目录', storageHint: '发送到这台 PC 的大文件会直接保存到这里。Docker 通常映射到 /data/CrossLAN。', savePath: '保存路径', network: '网络', speedLimit: '速度限制', unlimited: '不限速', manual: '手动', auto: '自动', diagnostics: '诊断', recentEvents: '最近事件', clear: '清空', noDebugEvents: '暂无诊断事件。', direct: '直存', browserDownload: '浏览器下载', p2p: 'P2P', measuring: '测速中', receivePrompt: '接收', receiveLargePrompt: '接收大文件', receiverRejected: '接收方已拒绝文件。', waitingSender: '已接受，等待发送方...', waitingLink: '已接受，等待下载链接...', receiveComplete: '接收完成', savingDisk: '正在写入 PC 磁盘...', downloadReady: '下载已准备好。如果没有自动打开，请点“打开下载”。', sentDownloadManager: '已交给浏览器下载管理器。', waitConfirm: '等待对方确认...', waitPhoneConfirm: '等待手机确认...', savedToPc: '已保存到 PC', preparingPhone: '正在为手机准备浏览器下载...', linkSentPhone: '下载链接已发送到手机。', loadStorage: '正在读取保存目录...', loadStorageFailed: '读取保存目录失败。', saveStorageFailed: '保存目录失败。', current: '当前', saved: '已保存', parseFailed: '无法解析服务器响应。', uploadHttpFailed: '上传失败', uploadNetworkFailed: '上传失败：无法连接到 PC 服务。', cancelled: '传输已取消。', remoteCancelled: '对方已取消传输。', confirmTimeout: '等待对方确认超时。', failed: '传输失败。', duplicateSending: '这个文件正在传输中，已沿用现有任务。', duplicateIncoming: '相同文件已有接收任务，已忽略重复请求。', receivingRelay: '正在通过内存流式中继传输...', packagingBatch: '正在打包批量文件...', batchLabel: '批量文件'
   },
   en: {
-    local: 'Local', connecting: 'Connecting to signaling server', online: 'Online', offline: 'Offline', devices: 'LAN devices', selectTarget: 'Select target device', refresh: 'Refresh', emptyDevices: 'Open CrossLAN on another device in the same LAN and it will appear here.', deviceId: 'Device ID', lastSeen: 'Last seen', transfers: 'Transfers', noTransfers: 'No transfers yet.', cancel: 'Cancel', send: 'Send', receive: 'Receive', openDownload: 'Open download', storage: 'Storage', saveDirectory: 'PC save directory', storageHint: 'Large files sent to this PC are saved directly here. Docker usually maps this to /data/CrossLAN.', savePath: 'Save path', network: 'Network', speedLimit: 'Speed limit', unlimited: 'Unlimited', manual: 'Manual', auto: 'Auto', diagnostics: 'Diagnostics', recentEvents: 'Recent events', clear: 'Clear', noDebugEvents: 'No debug events yet.', direct: 'Direct save', browserDownload: 'Browser download', p2p: 'P2P', measuring: 'measuring', receivePrompt: 'Receive', receiveLargePrompt: 'Receive large file', receiverRejected: 'Receiver rejected the file.', waitingSender: 'Accepted. Waiting for sender...', waitingLink: 'Accepted. Waiting for download link...', receiveComplete: 'Receive complete', savingDisk: 'Saving to PC disk...', downloadReady: 'Download ready. If it did not open, tap Open download.', sentDownloadManager: 'Sent to browser download manager.', waitConfirm: 'Waiting for receiver confirmation...', waitPhoneConfirm: 'Waiting for phone confirmation...', savedToPc: 'Saved to PC', preparingPhone: 'Preparing browser download for phone...', linkSentPhone: 'Download link sent to phone.', loadStorage: 'Loading save directory...', loadStorageFailed: 'Failed to load save directory.', saveStorageFailed: 'Failed to save directory.', current: 'Current', saved: 'Saved', parseFailed: 'Failed to parse server response.', uploadHttpFailed: 'Upload failed', uploadNetworkFailed: 'Upload failed: cannot connect to PC service.', cancelled: 'Transfer cancelled.', remoteCancelled: 'Peer cancelled the transfer.', confirmTimeout: 'Timed out waiting for receiver confirmation.', failed: 'Transfer failed.', duplicateSending: 'This file is already being transferred. Reusing the existing task.', duplicateIncoming: 'The same file already has a receive task. Ignoring the duplicate request.', receivingRelay: 'Sender is uploading to the temporary download area...' }
+    local: 'Local', connecting: 'Connecting to signaling server', online: 'Online', offline: 'Offline', devices: 'LAN devices', selectTarget: 'Select target device', refresh: 'Refresh', emptyDevices: 'Open CrossLAN on another device in the same LAN and it will appear here.', deviceId: 'Device ID', lastSeen: 'Last seen', transfers: 'Transfers', noTransfers: 'No transfers yet.', cancel: 'Cancel', send: 'Send', receive: 'Receive', openDownload: 'Open download', storage: 'Storage', saveDirectory: 'PC save directory', storageHint: 'Large files sent to this PC are saved directly here. Docker usually maps this to /data/CrossLAN.', savePath: 'Save path', network: 'Network', speedLimit: 'Speed limit', unlimited: 'Unlimited', manual: 'Manual', auto: 'Auto', diagnostics: 'Diagnostics', recentEvents: 'Recent events', clear: 'Clear', noDebugEvents: 'No debug events yet.', direct: 'Direct save', browserDownload: 'Browser download', p2p: 'P2P', measuring: 'measuring', receivePrompt: 'Receive', receiveLargePrompt: 'Receive large file', receiverRejected: 'Receiver rejected the file.', waitingSender: 'Accepted. Waiting for sender...', waitingLink: 'Accepted. Waiting for download link...', receiveComplete: 'Receive complete', savingDisk: 'Saving to PC disk...', downloadReady: 'Download ready. If it did not open, tap Open download.', sentDownloadManager: 'Sent to browser download manager.', waitConfirm: 'Waiting for receiver confirmation...', waitPhoneConfirm: 'Waiting for phone confirmation...', savedToPc: 'Saved to PC', preparingPhone: 'Preparing browser download for phone...', linkSentPhone: 'Download link sent to phone.', loadStorage: 'Loading save directory...', loadStorageFailed: 'Failed to load save directory.', saveStorageFailed: 'Failed to save directory.', current: 'Current', saved: 'Saved', parseFailed: 'Failed to parse server response.', uploadHttpFailed: 'Upload failed', uploadNetworkFailed: 'Upload failed: cannot connect to PC service.', cancelled: 'Transfer cancelled.', remoteCancelled: 'Peer cancelled the transfer.', confirmTimeout: 'Timed out waiting for receiver confirmation.', failed: 'Transfer failed.', duplicateSending: 'This file is already being transferred. Reusing the existing task.', duplicateIncoming: 'The same file already has a receive task. Ignoring the duplicate request.', receivingRelay: 'Streaming through memory relay...', packagingBatch: 'Packaging batch files...', batchLabel: 'Batch files' }
 };
 
 type PendingAccept = { resolve: () => void; reject: (error: Error) => void; timer: number };
@@ -161,7 +166,6 @@ const activePeers = new Map<string, string>();
 const activeSendKeys = new Map<string, string>();
 const incomingPromptKeys = new Map<string, string>();
 const activeTransferKeys = new Map<string, string>();
-const lastRelayProgressSignalAt = new Map<string, number>();
 const autoDownloadedTransfers = new Set<string>();
 const fileInput = ref<HTMLInputElement | null>(null);
 const pendingTarget = ref<DeviceRecord | null>(null);
@@ -292,12 +296,17 @@ async function handleAppMessage(message: SignalingMessage) {
   }
 
   if (message.type === 'relay-transfer-progress') {
-    updateRelayReceiveProgress(message.transferId, message.fileName, message.bytesTransferred, message.totalBytes);
+    updateRelayTransferProgress(message.transferId, message.fileName, message.bytesTransferred, message.totalBytes);
     return;
   }
 
   if (message.type === 'relay-transfer-ready') {
-    handleRelayTransferReady(message.transferId, message.fileName, message.downloadUrl, message.bytesWritten);
+    updateStatus(message.transferId, t.value.sentDownloadManager);
+    return;
+  }
+
+  if (message.type === 'relay-transfer-error') {
+    handleRelayTransferError(message.transferId, message.fileName, message.message);
     return;
   }
 
@@ -391,10 +400,10 @@ async function chooseAndSend(device: DeviceRecord) {
 
   if (window.showOpenFilePicker) {
     try {
-      const [handle] = await window.showOpenFilePicker({ multiple: false });
-      const file = await handle?.getFile();
-      if (file) {
-        await sendSelectedFile(device, file);
+      const handles = await window.showOpenFilePicker({ multiple: true });
+      const files = await Promise.all(handles.map(handle => handle.getFile()));
+      if (files.length > 0) {
+        await sendSelectedFiles(device, files);
         return;
       }
     } catch (error) {
@@ -407,11 +416,28 @@ async function chooseAndSend(device: DeviceRecord) {
 
 async function handleFilePicked(event: Event) {
   const input = event.target as HTMLInputElement;
-  const file = input.files?.[0];
+  const files = [...(input.files ?? [])];
   const target = pendingTarget.value;
   input.value = '';
-  if (!file || !target) return;
-  await sendSelectedFile(target, file);
+  if (files.length === 0 || !target) return;
+  await sendSelectedFiles(target, files);
+}
+
+async function sendSelectedFiles(target: DeviceRecord, files: File[]) {
+  if (files.length === 1) {
+    await sendSelectedFile(target, files[0]);
+    return;
+  }
+
+  const totalSize = files.reduce((sum, file) => sum + file.size, 0);
+  const plan = createSendPlan(files);
+  addLog('batch files selected', { target: target.id, count: files.length, totalSize, plan: plan.map(item => ({ type: Array.isArray(item) ? 'batch' : 'file', count: Array.isArray(item) ? item.length : 1 })) });
+
+  for (const item of plan) {
+    const file = Array.isArray(item) ? await createBatchZipFile(item) : item;
+    await sendSelectedFile(target, file);
+    if (wasLastSendCancelledOrFailed(target.id, file)) break;
+  }
 }
 
 async function sendSelectedFile(target: DeviceRecord, file: File) {
@@ -466,6 +492,8 @@ async function handleRelayTransferRequest(from: string, meta: FileMeta) {
 
   enableWakeLock();
   trackIncomingTransfer(from, meta, 'relay');
+  const downloadUrl = `/api/transfers/relay/${encodeURIComponent(meta.transferId)}/${encodeURIComponent(meta.name)}?size=${encodeURIComponent(String(meta.size))}`;
+  const absoluteUrl = new URL(downloadUrl, location.origin).toString();
   progress.value = new Map(progress.value).set(meta.transferId, {
     id: meta.transferId,
     direction: 'receive',
@@ -474,14 +502,17 @@ async function handleRelayTransferRequest(from: string, meta: FileMeta) {
     totalBytes: meta.size,
     done: false,
     mode: 'relay',
+    downloadUrl: absoluteUrl,
+    needsUserSave: false,
     cancellable: true,
     peerId: from,
-    statusText: t.value.waitingLink
+    statusText: t.value.receivingRelay
   });
   signaling.send({ type: 'relay-transfer-accept', to: from, transferId: meta.transferId });
-  addLog('relay request accepted', { to: from, transferId: meta.transferId });
+  addLog('relay request accepted', { to: from, transferId: meta.transferId, downloadUrl: absoluteUrl });
+  triggerBrowserDownload(absoluteUrl, meta.name);
+  signaling.send({ type: 'relay-transfer-ready', to: from, transferId: meta.transferId, fileName: meta.name, downloadUrl, bytesWritten: 0 });
 }
-
 function waitForPending(map: Map<string, PendingAccept>, transferId: string) {
   return new Promise<void>((resolve, reject) => {
     const timer = window.setTimeout(() => {
@@ -544,12 +575,13 @@ function updateDirectReceiveProgress(transferId: string, fileName: string, bytes
   progress.value = new Map(progress.value).set(transferId, item);
 }
 
-function updateRelayReceiveProgress(transferId: string, fileName: string, bytesTransferred: number, totalBytes: number) {
+function updateRelayTransferProgress(transferId: string, fileName: string, bytesTransferred: number, totalBytes: number) {
   const current = progress.value.get(transferId);
-  if (current?.direction === 'send' || current?.done) return;
+  if (current?.done) return;
+  const direction = current?.direction || 'receive';
   setProgress(withSpeedSample({
     id: transferId,
-    direction: 'receive',
+    direction,
     fileName,
     bytesTransferred,
     totalBytes,
@@ -557,50 +589,53 @@ function updateRelayReceiveProgress(transferId: string, fileName: string, bytesT
     mode: 'relay',
     cancellable: true,
     peerId: current?.peerId,
-    statusText: t.value.receivingRelay
+    statusText: direction === 'send' ? t.value.receivingRelay : t.value.receivingRelay
   }));
 }
 
-function handleRelayTransferReady(transferId: string, fileName: string, downloadUrl: string, bytesWritten: number) {
+function handleRelayTransferError(transferId: string, fileName = 'Relay file', message: string) {
   const current = progress.value.get(transferId);
-  const absoluteUrl = new URL(downloadUrl, location.origin).toString();
-  addLog('relay download ready', { transferId, fileName, bytesWritten, absoluteUrl });
-  triggerBrowserDownload(absoluteUrl, fileName);
-  progress.value = new Map(progress.value).set(transferId, {
+  if (current?.direction === 'send') return;
+  addLog('relay transfer error received', { transferId, fileName, direction: current?.direction, message }, 'warn');
+  setProgress({
     id: transferId,
     direction: 'receive',
-    fileName,
-    bytesTransferred: bytesWritten,
-    totalBytes: current?.totalBytes || bytesWritten,
+    fileName: current?.fileName || fileName,
+    bytesTransferred: current?.bytesTransferred || 0,
+    totalBytes: current?.totalBytes || 0,
     done: true,
     mode: 'relay',
-    downloadUrl: absoluteUrl,
-    needsUserSave: true,
     cancellable: false,
+    cancelled: message === t.value.cancelled || message === t.value.remoteCancelled,
     peerId: current?.peerId,
-    statusText: t.value.downloadReady
+    statusText: message
   });
   clearTransferBookkeeping(transferId);
   disableWakeLock();
 }
-
 function withSpeedSample(item: TransferProgress): TransferProgress {
   const now = performance.now();
   const previous = speedSamples.get(item.id);
+  const current = progress.value.get(item.id);
+  const safeTotal = Math.max(item.totalBytes || 0, current?.totalBytes || 0);
+  const safeBytes = item.done
+    ? Math.max(item.bytesTransferred || 0, current?.bytesTransferred || 0)
+    : Math.min(safeTotal || item.bytesTransferred || 0, Math.max(item.bytesTransferred || 0, current?.bytesTransferred || 0));
+  const normalized = { ...item, bytesTransferred: safeBytes, totalBytes: safeTotal || item.totalBytes };
   if (!previous) {
-    speedSamples.set(item.id, { startedAt: now, lastAt: now, lastBytes: item.bytesTransferred });
-    return item;
+    speedSamples.set(item.id, { startedAt: now, lastAt: now, lastBytes: normalized.bytesTransferred });
+    return normalized;
   }
 
   const deltaMs = Math.max(now - previous.lastAt, 1);
-  const deltaBytes = Math.max(item.bytesTransferred - previous.lastBytes, 0);
+  const deltaBytes = Math.max(normalized.bytesTransferred - previous.lastBytes, 0);
   const elapsedSeconds = Math.max((now - previous.startedAt) / 1000, 0.001);
   const sampled = {
-    ...item,
+    ...normalized,
     speedBytesPerSecond: (deltaBytes / deltaMs) * 1000,
-    averageBytesPerSecond: item.bytesTransferred / elapsedSeconds
+    averageBytesPerSecond: normalized.bytesTransferred / elapsedSeconds
   };
-  speedSamples.set(item.id, { ...previous, lastAt: now, lastBytes: item.bytesTransferred });
+  speedSamples.set(item.id, { ...previous, lastAt: now, lastBytes: normalized.bytesTransferred });
   return sampled;
 }
 
@@ -751,17 +786,15 @@ async function sendRelayToBrowserDownload(target: DeviceRecord, file: File) {
     updateStatus(id, t.value.preparingPhone);
 
     const result = await uploadRelayWithProgress(file, id, uploaded => {
-      updateUploaded(id, uploaded);
-      sendRelayProgress(target.id, id, file.name, uploaded, file.size);
+      addRelayUploadDebug(id, uploaded, file.size);
     });
-    sendRelayProgress(target.id, id, file.name, file.size, file.size, true);
     addLog('relay upload finished', { transferId: id, result });
     signaling.send({
       type: 'relay-transfer-ready',
       to: target.id,
       transferId: id,
       fileName: result.fileName,
-      downloadUrl: result.downloadUrl,
+      downloadUrl: `/api/transfers/relay/${encodeURIComponent(id)}/${encodeURIComponent(result.fileName)}`,
       bytesWritten: result.bytesWritten
     });
 
@@ -775,7 +808,7 @@ async function sendRelayToBrowserDownload(target: DeviceRecord, file: File) {
       mode: 'relay',
       cancellable: false,
       peerId: target.id,
-      statusText: t.value.linkSentPhone
+      statusText: t.value.sentDownloadManager
     });
   } catch (error) {
     markFailed(id, file, 'relay', error);
@@ -832,6 +865,44 @@ function findActiveSend(targetId: string, file: File, mode: 'direct' | 'relay') 
   return '';
 }
 
+function wasLastSendCancelledOrFailed(targetId: string, file: File) {
+  const candidates = [...progress.value.values()].filter(item => item.direction === 'send' && item.peerId === targetId && item.fileName === file.name && item.totalBytes === file.size);
+  const latest = candidates.at(-1);
+  return Boolean(latest?.done && (latest.cancelled || (latest.bytesTransferred < latest.totalBytes)));
+}
+
+function createSendPlan(files: File[]) {
+  const plan: Array<File | File[]> = [];
+  let smallBatch: File[] = [];
+  let smallBatchSize = 0;
+
+  const flushSmallBatch = () => {
+    if (smallBatch.length === 1) {
+      plan.push(smallBatch[0]);
+    } else if (smallBatch.length > 1) {
+      plan.push([...smallBatch]);
+    }
+    smallBatch = [];
+    smallBatchSize = 0;
+  };
+
+  for (const file of files) {
+    const isSmall = file.size <= SMALL_BATCH_MAX_FILE;
+    if (!isSmall) {
+      flushSmallBatch();
+      plan.push(file);
+      continue;
+    }
+
+    if (smallBatchSize + file.size > SMALL_BATCH_MAX_TOTAL) flushSmallBatch();
+    smallBatch.push(file);
+    smallBatchSize += file.size;
+  }
+
+  flushSmallBatch();
+  return plan;
+}
+
 function trackActiveSend(targetId: string, file: File, mode: 'direct' | 'relay', transferId: string) {
   const key = createFileTransferKey(targetId, file, mode);
   activeSendKeys.set(key, transferId);
@@ -861,17 +932,145 @@ function clearTransferBookkeeping(transferId: string) {
   activePeers.delete(transferId);
   activeUploads.delete(transferId);
   speedSamples.delete(transferId);
-  lastRelayProgressSignalAt.delete(transferId);
 }
 
 function createFileMeta(transferId: string, file: File): FileMeta {
-  return {
+  const meta: FileMeta = {
     transferId,
     name: file.name,
     size: file.size,
     type: file.type || 'application/octet-stream',
     lastModified: file.lastModified
   };
+  const batchCount = getBatchFileCount(file);
+  if (batchCount > 0) {
+    meta.packageType = 'crosslan-zip';
+    meta.packageCount = batchCount;
+  }
+  return meta;
+}
+
+type BatchZipFile = File & { __crosslanPackageType?: 'crosslan-zip'; __crosslanPackageCount?: number };
+type ZipEntryInfo = { file: File; name: string; encodedName: Uint8Array; crc: number; offset: number };
+
+function getBatchFileCount(file: File) {
+  return (file as BatchZipFile).__crosslanPackageType === 'crosslan-zip' ? ((file as BatchZipFile).__crosslanPackageCount || 0) : 0;
+}
+
+async function createBatchZipFile(files: File[]) {
+  const safeFiles = files.map((file, index) => ({ file, name: createUniqueZipName(file.name || `file-${index + 1}.bin`, index) }));
+  const totalSize = safeFiles.reduce((sum, item) => sum + item.file.size, 0);
+  if (files.length > ZIP32_MAX || totalSize > ZIP32_MAX) {
+    throw new Error('Batch ZIP is limited to 4 GB in this version.');
+  }
+
+  const entries: ZipEntryInfo[] = [];
+  const parts: BlobPart[] = [];
+  let offset = 0;
+
+  for (const item of safeFiles) {
+    const encodedName = textEncoder.encode(item.name);
+    const crc = await crc32File(item.file);
+    const header = createZipLocalHeader(encodedName, crc, item.file.size);
+    entries.push({ ...item, encodedName, crc, offset });
+    parts.push(header, item.file);
+    offset += header.byteLength + item.file.size;
+  }
+
+  const centralStart = offset;
+  for (const entry of entries) {
+    const central = createZipCentralHeader(entry);
+    parts.push(central);
+    offset += central.byteLength;
+  }
+  parts.push(createZipEnd(entries.length, offset - centralStart, centralStart));
+
+  const name = `CrossLAN-${formatBatchTimestamp(new Date())}-${files.length}-files.zip`;
+  const zip = new File(parts, name, { type: 'application/zip', lastModified: Date.now() }) as BatchZipFile;
+  zip.__crosslanPackageType = 'crosslan-zip';
+  zip.__crosslanPackageCount = files.length;
+  return zip;
+}
+
+function createUniqueZipName(name: string, index: number) {
+  const cleaned = name.replace(/\\/g, '/').split('/').filter(Boolean).join('/').replace(/^\.+/, '') || `file-${index + 1}.bin`;
+  return `${String(index + 1).padStart(3, '0')}-${cleaned}`;
+}
+
+async function crc32File(file: File) {
+  let crc = 0xffffffff;
+  for (let offset = 0; offset < file.size; offset += ZIP_CHUNK_SIZE) {
+    const chunk = new Uint8Array(await file.slice(offset, Math.min(offset + ZIP_CHUNK_SIZE, file.size)).arrayBuffer());
+    for (const byte of chunk) {
+      crc = (crc >>> 8) ^ CRC32_TABLE[(crc ^ byte) & 0xff];
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function createZipLocalHeader(fileName: Uint8Array, crc: number, size: number) {
+  const buffer = new ArrayBuffer(30 + fileName.length);
+  const view = new DataView(buffer);
+  view.setUint32(0, 0x04034b50, true);
+  view.setUint16(4, 20, true);
+  view.setUint16(6, 0x0800, true);
+  view.setUint16(8, 0, true);
+  view.setUint16(10, 0, true);
+  view.setUint16(12, 0, true);
+  view.setUint32(14, crc, true);
+  view.setUint32(18, size, true);
+  view.setUint32(22, size, true);
+  view.setUint16(26, fileName.length, true);
+  view.setUint16(28, 0, true);
+  new Uint8Array(buffer, 30).set(fileName);
+  return buffer;
+}
+
+function createZipCentralHeader(entry: ZipEntryInfo) {
+  const buffer = new ArrayBuffer(46 + entry.encodedName.length);
+  const view = new DataView(buffer);
+  view.setUint32(0, 0x02014b50, true);
+  view.setUint16(4, 20, true);
+  view.setUint16(6, 20, true);
+  view.setUint16(8, 0x0800, true);
+  view.setUint16(10, 0, true);
+  view.setUint16(12, 0, true);
+  view.setUint16(14, 0, true);
+  view.setUint32(16, entry.crc, true);
+  view.setUint32(20, entry.file.size, true);
+  view.setUint32(24, entry.file.size, true);
+  view.setUint16(28, entry.encodedName.length, true);
+  view.setUint16(30, 0, true);
+  view.setUint16(32, 0, true);
+  view.setUint16(34, 0, true);
+  view.setUint16(36, 0, true);
+  view.setUint32(38, 0, true);
+  view.setUint32(42, entry.offset, true);
+  new Uint8Array(buffer, 46).set(entry.encodedName);
+  return buffer;
+}
+
+function createZipEnd(entryCount: number, centralSize: number, centralOffset: number) {
+  const buffer = new ArrayBuffer(22);
+  const view = new DataView(buffer);
+  view.setUint32(0, 0x06054b50, true);
+  view.setUint16(8, entryCount, true);
+  view.setUint16(10, entryCount, true);
+  view.setUint32(12, centralSize, true);
+  view.setUint32(16, centralOffset, true);
+  return buffer;
+}
+
+function formatBatchTimestamp(date: Date) {
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+}
+
+const CRC32_TABLE = new Uint32Array(256);
+for (let i = 0; i < CRC32_TABLE.length; i += 1) {
+  let crc = i;
+  for (let bit = 0; bit < 8; bit += 1) crc = (crc & 1) ? (0xedb88320 ^ (crc >>> 1)) : (crc >>> 1);
+  CRC32_TABLE[i] = crc >>> 0;
 }
 
 function setProgress(item: TransferProgress) {
@@ -888,14 +1087,6 @@ function updateUploaded(id: string, uploaded: number) {
   const current = progress.value.get(id);
   if (!current) return;
   setProgress(withSpeedSample({ ...current, bytesTransferred: uploaded }));
-}
-
-function sendRelayProgress(to: string, transferId: string, fileName: string, bytesTransferred: number, totalBytes: number, force = false) {
-  const now = performance.now();
-  const previous = lastRelayProgressSignalAt.get(transferId) || 0;
-  if (!force && bytesTransferred < totalBytes && now - previous < 500) return;
-  lastRelayProgressSignalAt.set(transferId, now);
-  signaling.send({ type: 'relay-transfer-progress', to, transferId, fileName, bytesTransferred, totalBytes });
 }
 
 function markFailed(id: string, file: File, mode: 'direct' | 'relay', error: unknown) {
@@ -917,12 +1108,20 @@ function markFailed(id: string, file: File, mode: 'direct' | 'relay', error: unk
   });
 }
 
+function addRelayUploadDebug(transferId: string, uploaded: number, totalBytes: number) {
+  const now = performance.now();
+  const previous = lastDebugProgressAt.get(transferId) || 0;
+  if (uploaded < totalBytes && now - previous < 2000) return;
+  lastDebugProgressAt.set(transferId, now);
+  addLog('relay upload buffered', { transferId, uploaded, totalBytes });
+}
+
 function uploadWithProgress(file: File, transferId: string, onProgress: (uploaded: number) => void) {
   return uploadFileWithProgress<{ path: string; bytesWritten: number }>('/api/transfers/direct', file, transferId, onProgress);
 }
 
 function uploadRelayWithProgress(file: File, transferId: string, onProgress: (uploaded: number) => void) {
-  return uploadFileWithProgress<{ fileName: string; downloadUrl: string; bytesWritten: number }>('/api/transfers/relay', file, transferId, onProgress);
+  return uploadFileWithProgress<{ fileName: string; bytesWritten: number }>(`/api/transfers/relay/${encodeURIComponent(transferId)}`, file, transferId, onProgress);
 }
 
 function uploadFileWithProgress<T extends Record<string, unknown>>(endpoint: string, file: File, transferId: string | undefined, onProgress: (uploaded: number) => void) {
@@ -1030,7 +1229,6 @@ function cleanup() {
   activeSendKeys.clear();
   incomingPromptKeys.clear();
   activeTransferKeys.clear();
-  lastRelayProgressSignalAt.clear();
   disableWakeLock();
   signaling.close();
 }

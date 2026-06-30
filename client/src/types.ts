@@ -34,6 +34,7 @@ export interface TransferProgress {
   statusText?: string;
   speedBytesPerSecond?: number;
   averageBytesPerSecond?: number;
+  batchLabel?: string;
 }
 
 export type SignalingMessage =
@@ -52,6 +53,7 @@ export type SignalingMessage =
   | { type: 'relay-transfer-reject'; from: string; to?: string; transferId: string; reason?: string }
   | { type: 'relay-transfer-progress'; from: string; to?: string; transferId: string; fileName: string; bytesTransferred: number; totalBytes: number }
   | { type: 'relay-transfer-ready'; from: string; to?: string; transferId: string; fileName: string; downloadUrl: string; bytesWritten: number }
+  | { type: 'relay-transfer-error'; transferId: string; fileName?: string; message: string }
   | { type: 'transfer-cancel'; from: string; to?: string; transferId: string; reason?: string }
   | { type: 'direct-transfer-progress'; transferId: string; fileName: string; bytesTransferred: number; totalBytes: number }
   | { type: 'direct-transfer-complete'; transferId: string; fileName: string; bytesTransferred: number; totalBytes: number; path: string }
@@ -66,4 +68,6 @@ export interface FileMeta {
   size: number;
   type: string;
   lastModified: number;
+  packageType?: 'crosslan-zip';
+  packageCount?: number;
 }

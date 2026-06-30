@@ -6,8 +6,9 @@ CrossLAN is a lightweight LAN file transfer PWA for phones and PCs on the same n
 
 - LAN device discovery through the local signaling server and mDNS hooks.
 - Small-file peer-to-peer transfer with WebRTC DataChannel backpressure.
+- Batch file selection: small files are packed into uncompressed ZIP batches; large files are sent one by one in selection order.
 - Large-file direct save to PC disk when the receiver is a desktop/server device.
-- Large-file browser-download relay for phone receivers.
+- Large-file browser-download relay for phone receivers, streamed through server memory instead of a temporary relay file.
 - Cancellable large-file transfers: cancelling aborts the active HTTP upload and notifies the peer.
 - System-language UI: Chinese browsers show Chinese, other languages show English.
 - Optional HTTPS server and optional HTTP to HTTPS redirect for deployments with a trusted certificate.
@@ -74,10 +75,12 @@ volumes:
 ## File Saving Model
 
 - Phone to PC large files: the browser uploads to `/api/transfers/direct`; the server streams the request directly to the configured PC save directory.
-- PC to phone large files: the browser uploads to `/api/transfers/relay`; the phone receives a browser download link after upload completion.
+- PC to phone large files: the phone opens `/api/transfers/relay/:transferId/:fileName` as a browser download, while the sender uploads to `/api/transfers/relay/:transferId`; the server pipes both sides through a bounded memory stream.
 - Small files: WebRTC DataChannel transfers chunks in memory and hands the completed file to the browser download flow.
+- Multiple selected small files are packed into uncompressed `.zip` batches so the receiver confirms once per small batch. Files larger than 8 MB, or batches beyond 64 MB total, are sent sequentially as original files instead of being packed.
 
 The large-file HTTP paths stream data and do not intentionally buffer the whole file in frontend memory.
+For PC-to-phone browser downloads, the sender's upload speed is naturally back-pressured by the phone download speed. The relay memory buffer defaults to `128` MB and can be tuned with `CROSSLAN_RELAY_BUFFER_MB`; a larger buffer absorbs short Wi-Fi stalls, but can also make upload progress look more bursty because the PC fills the buffer and then waits for the phone/browser download path.
 
 ## PC Save Directory
 
@@ -115,7 +118,7 @@ npm run build
 ## Resource Rules
 
 - WebRTC file reads use `Blob.slice()` chunks and DataChannel backpressure.
-- Large HTTP uploads stream to disk or relay storage.
+- Large HTTP uploads stream either to the configured PC save directory or through a bounded in-memory relay stream for browser downloads.
 - DOM progress updates are throttled.
 - File payloads are not cached by the Service Worker.
 - WebRTC connections are created only when a user starts a transfer.
