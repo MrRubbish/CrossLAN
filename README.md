@@ -11,8 +11,8 @@ CrossLAN is a lightweight LAN file transfer PWA for phones and PCs on the same n
 - Large-file browser-download relay for phone receivers, streamed through server memory instead of a temporary relay file.
 - Cancellable large-file transfers: cancelling aborts the active HTTP upload and notifies the peer.
 - System-language UI: Chinese browsers show Chinese, other languages show English.
+- System dark mode support through `prefers-color-scheme`.
 - Optional HTTPS server and optional HTTP to HTTPS redirect for deployments with a trusted certificate.
-- Built-in diagnostics panel for transfer and signaling logs.
 
 ## Run Locally
 
@@ -28,13 +28,37 @@ Then open `http://<PC-LAN-IP>:8080` on the PC and phone. Both devices must be on
 npm run dev
 ```
 
+On Windows you can use the helper script:
+
+```powershell
+.\scripts\start-local.ps1
+```
+
+Optional parameters:
+
+```powershell
+.\scripts\start-local.ps1 -Port 8080 -SaveDir "$env:USERPROFILE\Downloads\CrossLAN" -RelayBufferMb 128
+```
+
 ## Docker
 
 ```bash
 docker compose up --build
 ```
 
-The compose file maps the PC save directory to `~/Downloads/CrossLAN` on Windows-style hosts and `/data/CrossLAN` inside the container. The service uses `network_mode: host` because LAN discovery, local IP detection, and phone-to-PC access work best when the container shares the host network.
+On Windows PowerShell:
+
+```powershell
+.\scripts\start-docker.ps1
+```
+
+The compose file maps the PC save directory to `~/Downloads/CrossLAN` on Windows-style hosts and `/data/CrossLAN` inside the container. It publishes host port `8080` to the container service. Open `http://<host-LAN-IP>:8080` from other devices on the same LAN.
+
+Optional Docker script parameters:
+
+```powershell
+.\scripts\start-docker.ps1 -Port 8080 -RelayBufferMb 128
+```
 
 If Docker cannot pull `node:20-alpine`, configure Docker Desktop registry/proxy or build after the network can reach Docker Hub. The app code itself does not require Docker to run; local `npm run build && npm start` is fine.
 

@@ -40,7 +40,18 @@ export class DeviceIdentity {
 
 function compactUserAgent(userAgent?: string | null) {
   if (!userAgent) return '';
-  const mobile = /Mobile|Android|iPhone|iPad/i.test(userAgent) ? 'Mobile' : 'Desktop';
-  const browser = userAgent.match(/(Edg|Chrome|Firefox|Safari)\/?\d*/i)?.[0] || 'Browser';
-  return `${mobile} ${browser}`;
+  const ua = userAgent;
+  const isAndroid = /Android/i.test(ua);
+  const isIos = /iPhone|iPad|iPod/i.test(ua);
+  const isWindows = /Windows NT/i.test(ua);
+  const isMac = /Macintosh|Mac OS X/i.test(ua) && !isIos;
+  const isChromeOs = /CrOS/i.test(ua);
+  const isDesktopLinux = /X11|Linux x86_64|Linux i686|Ubuntu|Fedora|Debian/i.test(ua) && !isAndroid;
+  const device = isAndroid || isIos
+    ? 'Mobile'
+    : isWindows || isMac || isChromeOs || isDesktopLinux
+      ? 'Desktop'
+      : 'Browser';
+  const browser = ua.match(/(Edg|Chrome|Firefox|Safari)\/?\d*/i)?.[0] || 'Browser';
+  return `${device} ${browser}`;
 }

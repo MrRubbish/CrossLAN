@@ -11,7 +11,7 @@ export interface LocalIdentity extends DeviceRecord {
   serverIps: string[];
 }
 
-export type BandwidthMode = 'unlimited' | 'manual' | 'auto';
+export type BandwidthMode = 'unlimited' | 'manual';
 
 export interface BandwidthLimit {
   mode: BandwidthMode;
@@ -34,6 +34,9 @@ export interface TransferProgress {
   statusText?: string;
   speedBytesPerSecond?: number;
   averageBytesPerSecond?: number;
+  peakBytesPerSecond?: number;
+  startedAt?: number;
+  completedAt?: number;
   batchLabel?: string;
 }
 

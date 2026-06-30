@@ -1,10 +1,10 @@
 import os from 'node:os';
 import { nanoid } from 'nanoid';
 
-const SIGNAL_TYPES = new Set(['offer', 'answer', 'ice-candidate', 'transfer-accept', 'transfer-reject', 'direct-transfer-request', 'direct-transfer-accept', 'direct-transfer-reject', 'relay-transfer-request', 'relay-transfer-accept', 'relay-transfer-reject', 'relay-transfer-progress', 'relay-transfer-ready', 'transfer-cancel']);
+const SIGNAL_TYPES = new Set(['offer', 'answer', 'ice-candidate', 'transfer-accept', 'transfer-reject', 'direct-transfer-request', 'direct-transfer-accept', 'direct-transfer-reject', 'relay-transfer-request', 'relay-transfer-accept', 'relay-transfer-reject', 'relay-transfer-progress', 'relay-transfer-ready', 'relay-transfer-error', 'transfer-cancel']);
 const REQUEST_TYPES = new Set(['transfer-accept', 'direct-transfer-request', 'relay-transfer-request', 'offer']);
 const RESPONSE_TYPES = new Set(['transfer-accept', 'transfer-reject', 'direct-transfer-accept', 'direct-transfer-reject', 'relay-transfer-accept', 'relay-transfer-reject', 'answer']);
-const RECEIVER_FOLLOWUP_TYPES = new Set(['relay-transfer-progress', 'relay-transfer-ready']);
+const RECEIVER_FOLLOWUP_TYPES = new Set(['relay-transfer-progress', 'relay-transfer-ready', 'relay-transfer-error']);
 const ROUTE_TTL_MS = 30 * 60 * 1000;
 
 export class SignalingHub {
@@ -187,6 +187,20 @@ export class SignalingHub {
     if (socket.readyState === socket.OPEN) {
       socket.send(JSON.stringify(payload));
     }
+  }
+
+  broadcastToTransfer(transferId, payload) {
+    const route = this.transferRoutes.get(String(transferId || ''));
+    if (!route) return false;
+    const targets = [
+      this.clients.get(route.requesterConnectionId),
+      route.receiverConnectionId ? this.clients.get(route.receiverConnectionId) : null
+    ].filter(isOpenClient);
+    if (!targets.length) return false;
+    for (const target of targets) {
+      this.send(target.socket, payload);
+    }
+    return true;
   }
 
   pruneTransferRoutes() {

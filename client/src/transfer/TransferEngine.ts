@@ -44,6 +44,7 @@ export class TransferEngine {
   private incomingHandler: IncomingHandler | null = null;
   private bandwidthLimit: BandwidthLimit = { mode: 'unlimited' };
   private lastProgressAt = 0;
+  private nextThrottleAt = 0;
 
   constructor(private signaling: SignalingClient, private getSelfId: () => string | null) {}
 
@@ -65,6 +66,36 @@ export class TransferEngine {
     // V1 defaults to unlimited. Future diagnostics can call this method with a
     // measured value to throttle TransferEngine without changing UI or signaling.
     this.bandwidthLimit = limit;
+    if (limit.mode !== 'manual' || !limit.bytesPerSecond) {
+      this.nextThrottleAt = 0;
+    }
+  }
+
+  cancelTransfer(transferId: string) {
+    for (const [peerId, session] of this.sessions.entries()) {
+      const sessionTransferId = session.fileMeta?.transferId || session.receiveState?.meta.transferId;
+      if (sessionTransferId !== transferId) continue;
+      this.emitDebug('p2p transfer cancelled', { peerId, transferId }, 'warn');
+      if (session.receiveState?.mode === 'stream') {
+        void session.receiveState.writer.abort('Transfer cancelled').catch(() => undefined);
+      } else if (session.receiveState?.mode === 'blob') {
+        session.receiveState.chunks.length = 0;
+      }
+      session.rejectSaved?.(new Error('Transfer cancelled.'));
+      this.emit({
+        id: transferId,
+        direction: session.file ? 'send' : 'receive',
+        fileName: session.fileMeta?.name || session.receiveState?.meta.name || 'Transfer',
+        bytesTransferred: session.receiveState?.bytes || 0,
+        totalBytes: session.fileMeta?.size || session.receiveState?.meta.size || 0,
+        done: true,
+        cancellable: false,
+        cancelled: true,
+        statusText: 'Transfer cancelled.'
+      });
+      this.cleanup(peerId);
+      return;
+    }
   }
 
   async sendFile(to: string, file: File) {
@@ -236,8 +267,9 @@ export class TransferEngine {
 
     while (offset < file.size && channel.readyState === 'open') {
       await this.waitForBackpressure(channel, BACKPRESSURE_HIGH_WATER);
-      await this.applyManualThrottle();
-      const buffer = await file.slice(offset, Math.min(offset + CHUNK_SIZE, file.size)).arrayBuffer();
+      const end = Math.min(offset + CHUNK_SIZE, file.size);
+      await this.applyManualThrottle(end - offset);
+      const buffer = await file.slice(offset, end).arrayBuffer();
       this.sendBinary(channel, buffer);
       offset += buffer.byteLength;
 
@@ -387,12 +419,17 @@ export class TransferEngine {
     });
   }
 
-  private async applyManualThrottle() {
+  private async applyManualThrottle(nextBytes: number) {
     if (this.bandwidthLimit.mode !== 'manual' || !this.bandwidthLimit.bytesPerSecond) return;
-    const ms = (CHUNK_SIZE / this.bandwidthLimit.bytesPerSecond) * 1000;
-    if (ms > 0) {
-      await new Promise(resolve => window.setTimeout(resolve, ms));
+    const now = performance.now();
+    if (this.nextThrottleAt <= 0 || this.nextThrottleAt < now - 1000) {
+      this.nextThrottleAt = now;
     }
+    const waitMs = this.nextThrottleAt - now;
+    if (waitMs > 1) {
+      await new Promise(resolve => window.setTimeout(resolve, waitMs));
+    }
+    this.nextThrottleAt = Math.max(performance.now(), this.nextThrottleAt) + (nextBytes / this.bandwidthLimit.bytesPerSecond) * 1000;
   }
 
   private emitThrottled(progress: TransferProgress) {

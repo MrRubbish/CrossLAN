@@ -1,6 +1,7 @@
 import express from 'express';
 import http, { createServer } from 'node:http';
 import https from 'node:https';
+import { once } from 'node:events';
 import { constants, createWriteStream } from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -34,6 +35,7 @@ let redirectServer = null;
 const wss = new WebSocketServer({ noServer: true });
 const networkProber = new NetworkProber();
 const relaySessions = new Map();
+const directChunkSessions = new Map();
 const mdns = new MdnsDiscovery({
   port,
   serviceName: process.env.MDNS_SERVICE_NAME || 'CrossLAN'
@@ -133,6 +135,88 @@ app.post('/api/transfers/direct', async (req, res) => {
   }
 });
 
+app.post('/api/transfers/direct/:transferId/chunk', async (req, res) => {
+  const transferId = sanitizePathSegment(req.params.transferId || req.header('x-crosslan-transfer-id') || '');
+  const fileName = sanitizeFileName(decodeFileName(String(req.header('x-crosslan-file-name') || req.query.name || 'download.bin')));
+  const expectedSize = Number(req.header('x-crosslan-file-size') || req.query.size || 0);
+  const offset = Number(req.header('x-crosslan-offset') || req.query.offset || 0);
+  const isFinal = String(req.header('x-crosslan-final') || req.query.final || '') === '1';
+
+  if (!transferId) {
+    res.status(400).json({ ok: false, message: 'transferId is required.' });
+    return;
+  }
+
+  let session = directChunkSessions.get(transferId);
+  try {
+    if (!session) {
+      if (offset !== 0) {
+        res.status(409).json({ ok: false, message: 'Chunk session has not started.' });
+        return;
+      }
+      await ensureWritableDirectory(storageSettings.saveDir);
+      const targetPath = await getAvailablePath(storageSettings.saveDir, fileName);
+      session = {
+        transferId,
+        fileName,
+        expectedSize,
+        targetPath,
+        bytesWritten: 0,
+        stream: createWriteStream(targetPath, { flags: 'wx', highWaterMark: DIRECT_UPLOAD_WRITE_BUFFER }),
+        startedAt: Date.now()
+      };
+      session.stream.on('error', error => {
+        session.error = error;
+      });
+      directChunkSessions.set(transferId, session);
+      console.log('CrossLAN direct chunk upload started: ' + fileName + ' -> ' + targetPath + ' (' + formatBytes(expectedSize) + ')');
+    }
+
+    if (session.bytesWritten !== offset) {
+      res.status(409).json({ ok: false, message: `Chunk offset mismatch: expected ${session.bytesWritten}, got ${offset}` });
+      return;
+    }
+
+    let chunkBytes = 0;
+    req.on('data', chunk => {
+      chunkBytes += chunk.length;
+      session.bytesWritten += chunk.length;
+      broadcastDirectProgress({ type: 'direct-transfer-progress', transferId, fileName: session.fileName, bytesTransferred: session.bytesWritten, totalBytes: session.expectedSize });
+    });
+
+    await writeRequestToStream(req, session.stream);
+    if (session.error) throw session.error;
+
+    if (isFinal) {
+      session.stream.end();
+      await once(session.stream, 'finish');
+      if (session.expectedSize > 0 && session.bytesWritten !== session.expectedSize) {
+        await fs.rm(session.targetPath, { force: true });
+        directChunkSessions.delete(transferId);
+        res.status(400).json({ ok: false, message: `Upload size mismatch: ${session.bytesWritten}/${session.expectedSize}` });
+        return;
+      }
+      const elapsedSeconds = Math.max((Date.now() - session.startedAt) / 1000, 0.001);
+      console.log('CrossLAN direct chunk upload completed: ' + path.basename(session.targetPath) + ' (' + formatBytes(session.bytesWritten) + ', avg ' + formatBytes(session.bytesWritten / elapsedSeconds) + '/s)');
+      broadcastDirectProgress({ type: 'direct-transfer-complete', transferId, fileName: path.basename(session.targetPath), bytesTransferred: session.bytesWritten, totalBytes: session.expectedSize || session.bytesWritten, path: session.targetPath });
+      directChunkSessions.delete(transferId);
+      res.json({ ok: true, fileName: path.basename(session.targetPath), path: session.targetPath, bytesWritten: session.bytesWritten });
+      return;
+    }
+
+    res.json({ ok: true, fileName: session.fileName, path: session.targetPath, bytesWritten: session.bytesWritten, chunkBytes });
+  } catch (error) {
+    console.error('CrossLAN direct chunk upload failed: transferId=' + transferId + ' ' + (error instanceof Error ? error.message : error));
+    if (session) {
+      session.stream.destroy();
+      await fs.rm(session.targetPath, { force: true }).catch(() => {});
+      directChunkSessions.delete(transferId);
+    }
+    broadcastDirectProgress({ type: 'direct-transfer-error', transferId, fileName, message: error instanceof Error ? error.message : 'Upload failed.' });
+    if (!res.headersSent) res.status(500).json({ ok: false, message: error instanceof Error ? error.message : 'Upload failed.' });
+  }
+});
+
 app.post('/api/transfers/relay/:transferId', async (req, res) => {
   const transferId = sanitizePathSegment(req.params.transferId || req.header('x-crosslan-transfer-id') || req.query.transferId || '');
   const fileName = sanitizeFileName(decodeFileName(String(req.header('x-crosslan-file-name') || req.query.name || 'download.bin')));
@@ -199,6 +283,95 @@ app.post('/api/transfers/relay/:transferId', async (req, res) => {
     console.error('CrossLAN relay stream upload failed: transferId=' + transferId + ' file=' + fileName + ' ' + (error instanceof Error ? error.message : error));
     if (!res.headersSent) res.status(500).json({ ok: false, message: error instanceof Error ? error.message : 'Relay stream upload failed.' });
   }
+});
+
+app.post('/api/transfers/relay/:transferId/chunk', async (req, res) => {
+  const transferId = sanitizePathSegment(req.params.transferId || req.header('x-crosslan-transfer-id') || req.query.transferId || '');
+  const fileName = sanitizeFileName(decodeFileName(String(req.header('x-crosslan-file-name') || req.query.name || 'download.bin')));
+  const expectedSize = Number(req.header('x-crosslan-file-size') || req.query.size || 0);
+  const offset = Number(req.header('x-crosslan-offset') || req.query.offset || 0);
+  const isFinal = String(req.header('x-crosslan-final') || req.query.final || '') === '1';
+
+  if (!transferId) {
+    res.status(400).json({ ok: false, message: 'transferId is required.' });
+    return;
+  }
+
+  const session = getOrCreateRelaySession(transferId, fileName, expectedSize);
+  try {
+    if (!session.uploadStarted) {
+      if (offset !== 0) {
+        res.status(409).json({ ok: false, message: 'Relay chunk session has not started.' });
+        return;
+      }
+      session.uploadStarted = true;
+      session.fileName = fileName;
+      session.expectedSize = expectedSize;
+      session.startedAt = Date.now();
+      clearRelaySessionTimer(session);
+      console.log('CrossLAN relay chunk upload started: ' + fileName + ' transferId=' + transferId + ' size=' + formatBytes(expectedSize));
+    }
+
+    if (session.bytesUploaded !== offset) {
+      res.status(409).json({ ok: false, message: `Chunk offset mismatch: expected ${session.bytesUploaded}, got ${offset}` });
+      return;
+    }
+
+    let chunkBytes = 0;
+    req.on('data', chunk => {
+      chunkBytes += chunk.length;
+      session.bytesUploaded += chunk.length;
+    });
+
+    await writeRequestToStream(req, session.stream);
+    if (session.failed) throw new Error('Relay session failed.');
+
+    if (isFinal) {
+      if (session.expectedSize > 0 && session.bytesUploaded !== session.expectedSize) {
+        failRelaySession(transferId, `Upload size mismatch: ${session.bytesUploaded}/${session.expectedSize}`);
+        res.status(400).json({ ok: false, message: `Upload size mismatch: ${session.bytesUploaded}/${session.expectedSize}` });
+        return;
+      }
+      session.uploadComplete = true;
+      session.stream.end();
+      const elapsedSeconds = Math.max((Date.now() - (session.startedAt || Date.now())) / 1000, 0.001);
+      console.log('CrossLAN relay chunk upload completed: ' + fileName + ' transferId=' + transferId + ' bytes=' + formatBytes(session.bytesUploaded) + ' avg=' + formatBytes(session.bytesUploaded / elapsedSeconds) + '/s');
+      scheduleRelaySessionCleanup(session, 30000);
+      res.json({ ok: true, fileName, bytesWritten: session.bytesUploaded });
+      return;
+    }
+
+    res.json({ ok: true, fileName, bytesWritten: session.bytesUploaded, chunkBytes });
+  } catch (error) {
+    if (!session.failed) failRelaySession(transferId, error instanceof Error ? error.message : 'Relay chunk upload failed.');
+    console.error('CrossLAN relay chunk upload failed: transferId=' + transferId + ' file=' + fileName + ' ' + (error instanceof Error ? error.message : error));
+    if (!res.headersSent) res.status(500).json({ ok: false, message: error instanceof Error ? error.message : 'Relay chunk upload failed.' });
+  }
+});
+
+app.get('/api/transfers/relay/:transferId/state', (req, res) => {
+  const transferId = sanitizePathSegment(req.params.transferId);
+  const session = relaySessions.get(transferId);
+  if (!session) {
+    res.status(404).json({ ok: false, message: 'Relay session not found.', bufferBytes: RELAY_BUFFER_BYTES, bufferedBytes: 0 });
+    return;
+  }
+
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({
+    ok: true,
+    transferId,
+    fileName: session.fileName,
+    expectedSize: session.expectedSize,
+    bufferBytes: RELAY_BUFFER_BYTES,
+    bufferedBytes: Math.max(session.bytesUploaded - session.bytesDownloaded, 0),
+    bytesUploaded: session.bytesUploaded,
+    bytesDownloaded: session.bytesDownloaded,
+    uploadStarted: session.uploadStarted,
+    downloadStarted: session.downloadStarted,
+    uploadComplete: session.uploadComplete,
+    failed: session.failed
+  });
 });
 
 app.get('/api/transfers/relay/:transferId/:fileName', async (req, res) => {
@@ -376,6 +549,7 @@ function closeServer(targetServer) {
 
 function broadcastRelayProgress(payload) {
   if (!payload.transferId) return;
+  if (hub.broadcastToTransfer(payload.transferId, payload)) return;
   const message = JSON.stringify(payload);
   for (const client of wss.clients) {
     if (client.readyState === client.OPEN) client.send(message);
@@ -384,6 +558,7 @@ function broadcastRelayProgress(payload) {
 
 function broadcastDirectProgress(payload) {
   if (!payload.transferId) return;
+  if (hub.broadcastToTransfer(payload.transferId, payload)) return;
   const message = JSON.stringify(payload);
   for (const client of wss.clients) {
     if (client.readyState === client.OPEN) client.send(message);
@@ -438,6 +613,12 @@ function clearRelaySessionTimer(session) {
   if (!session.timer) return;
   clearTimeout(session.timer);
   session.timer = null;
+}
+
+async function writeRequestToStream(req, stream) {
+  for await (const chunk of req) {
+    if (!stream.write(chunk)) await once(stream, 'drain');
+  }
 }
 
 function encodeRFC5987(value) {

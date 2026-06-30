@@ -7,7 +7,7 @@
           <p class="text-sm text-ink/60">{{ localStatus }}</p>
         </div>
         <div class="flex items-center gap-2">
-          <span class="rounded-full border border-line bg-white px-3 py-1 text-xs font-700 text-ink/55">{{ protocolLabel }}</span>
+          <span class="rounded-full border border-line bg-panel px-3 py-1 text-xs font-700 text-ink/55">{{ protocolLabel }}</span>
           <span class="rounded-full border px-3 py-1 text-xs font-700" :class="connected ? 'border-teal/25 bg-teal/8 text-teal' : 'border-coral/25 bg-coral/8 text-coral'">
             {{ connected ? t.online : t.offline }}
           </span>
@@ -29,7 +29,7 @@
           </div>
 
           <div v-else class="grid gap-3 sm:grid-cols-2">
-            <button v-for="device in devices" :key="device.id" class="tap border border-line bg-mist/60 p-4 text-left hover:border-teal/40 hover:bg-white" @click="chooseAndSend(device)">
+            <button v-for="device in devices" :key="device.id" class="tap border border-line bg-mist/60 p-4 text-left hover:border-teal/40 hover:bg-panel" @click="chooseAndSend(device)">
               <div class="flex items-start justify-between gap-3">
                 <div>
                   <p class="font-800">{{ identity.getDisplayName(device) }}</p>
@@ -48,7 +48,10 @@
 
         <aside class="space-y-4">
           <section class="panel p-4">
-            <p class="label">{{ t.transfers }}</p>
+            <div class="flex items-center justify-between gap-2">
+              <p class="label">{{ t.transfers }}</p>
+              <button v-if="progressItems.length" class="tap border border-line px-3 py-1 text-xs font-800" type="button" @click="clearTransfers">{{ t.clearTransfers }}</button>
+            </div>
             <div v-if="progressItems.length === 0" class="mt-3 text-sm text-ink/55">{{ t.noTransfers }}</div>
             <div v-for="item in progressItems" :key="item.id" class="mt-3 rounded-md border border-line p-3">
               <div class="flex items-center justify-between gap-3 text-sm font-700">
@@ -62,19 +65,22 @@
                 <div class="h-full rounded-full bg-teal" :style="{ width: `${percent(item)}%` }"></div>
               </div>
               <p class="mt-2 text-xs text-ink/50">
-                {{ item.direction === 'send' ? t.send : t.receive }} | {{ modeLabel(item.mode) }} | {{ formatBytes(item.bytesTransferred) }} / {{ formatBytes(item.totalBytes) }} | {{ formatSpeed(item.speedBytesPerSecond) }}
+                {{ item.direction === 'send' ? t.send : t.receive }} | {{ modeLabel(item.mode) }} | {{ formatBytes(item.bytesTransferred) }} / {{ formatBytes(item.totalBytes) }}
+              </p>
+              <p class="mt-1 text-xs text-ink/45">
+                {{ formatSpeedLine(item) }}
               </p>
               <p v-if="item.statusText" class="mt-1 break-all text-xs" :class="item.done && item.bytesTransferred < item.totalBytes ? 'text-coral' : 'text-ink/45'">{{ item.statusText }}</p>
               <a v-if="item.downloadUrl" class="tap mt-2 inline-flex border border-teal/30 bg-teal/10 px-3 py-2 text-xs font-800 text-teal" :href="item.downloadUrl" :download="item.fileName" target="_blank" rel="noopener" @click="logDownloadOpen(item)">{{ t.openDownload }}</a>
             </div>
           </section>
 
-          <section class="panel p-4">
+          <section v-if="isServiceHost" class="panel p-4">
             <p class="label">{{ t.storage }}</p>
             <h2 class="text-lg font-750">{{ t.saveDirectory }}</h2>
             <p class="mt-2 text-xs text-ink/50">{{ t.storageHint }}</p>
-            <input v-model="saveDirInput" class="mt-3 w-full rounded-md border border-line bg-white px-3 py-2 text-sm" placeholder="/data/CrossLAN" />
-            <button class="tap mt-3 w-full bg-ink px-3 py-2 text-sm font-800 text-white" @click="saveStorageDir">{{ t.savePath }}</button>
+            <input v-model="saveDirInput" class="mt-3 w-full rounded-md border border-line bg-panel px-3 py-2 text-sm text-ink" placeholder="/data/CrossLAN" />
+            <button class="tap mt-3 w-full bg-ink px-3 py-2 text-sm font-800 text-mist" @click="saveStorageDir">{{ t.savePath }}</button>
             <p class="mt-2 break-all text-xs" :class="storageStatusOk ? 'text-teal' : 'text-coral'">{{ storageMessage }}</p>
           </section>
 
@@ -88,28 +94,14 @@
             <div class="mt-4 space-y-3">
               <label class="flex items-center gap-2 text-sm"><input v-model="bandwidthMode" value="unlimited" type="radio" /> {{ t.unlimited }}</label>
               <label class="flex items-center gap-2 text-sm"><input v-model="bandwidthMode" value="manual" type="radio" /> {{ t.manual }}</label>
-              <input v-model.number="manualLimitMbps" :disabled="bandwidthMode !== 'manual'" type="number" min="1" class="w-full rounded-md border border-line bg-white px-3 py-2 text-sm disabled:bg-line/30" placeholder="Mbps" />
-              <label class="flex items-center gap-2 text-sm text-ink/40"><input v-model="bandwidthMode" value="auto" type="radio" disabled /> {{ t.auto }}</label>
+              <label class="flex items-center overflow-hidden rounded-md border border-line bg-panel">
+                <input v-model.number="manualLimitMbps" :disabled="bandwidthMode !== 'manual'" type="number" min="1" class="min-w-0 flex-1 border-0 bg-transparent px-3 py-2 text-sm outline-none disabled:bg-line/30" />
+                <span class="border-l border-line px-3 text-xs font-800 text-ink/55">{{ t.mbps }}</span>
+              </label>
+              <p class="text-xs text-ink/45">{{ t.uploadLimitHint }}</p>
             </div>
           </section>
-          <details class="panel p-4">
-            <summary class="cursor-pointer list-none">
-              <div class="flex items-center justify-between gap-2">
-                <div>
-                  <p class="label">{{ t.diagnostics }}</p>
-                  <h2 class="text-lg font-750">{{ t.recentEvents }}</h2>
-                </div>
-                <button class="tap border border-line px-3 py-1 text-xs font-800" type="button" @click.prevent="clearLogs">{{ t.clear }}</button>
-              </div>
-            </summary>
-            <div class="mt-3 max-h-72 space-y-2 overflow-auto rounded-md border border-line bg-white p-2 text-xs">
-              <p v-if="debugLogs.length === 0" class="text-ink/45">{{ t.noDebugEvents }}</p>
-              <div v-for="log in debugLogs" :key="log.id" class="border-b border-line/70 pb-2 last:border-b-0 last:pb-0">
-                <p :class="log.level === 'error' ? 'text-coral' : log.level === 'warn' ? 'text-amber-600' : 'text-ink/70'">{{ log.time }} {{ log.message }}</p>
-                <pre v-if="log.details" class="mt-1 whitespace-pre-wrap break-all text-ink/40">{{ log.details }}</pre>
-              </div>
-            </div>
-          </details>        </aside>
+        </aside>
       </div>
     </section>
   </main>
@@ -124,27 +116,30 @@ import { DeviceStore } from './storage/DeviceStore';
 import { TransferEngine } from './transfer/TransferEngine';
 import type { BandwidthMode, DeviceRecord, FileMeta, LocalIdentity, SignalingMessage, TransferProgress } from './types';
 
-const DIRECT_SAVE_THRESHOLD = 512 * 1024 * 1024;
 const PHONE_RELAY_THRESHOLD = 8 * 1024 * 1024;
+const DIRECT_SAVE_THRESHOLD = PHONE_RELAY_THRESHOLD;
 const SMALL_BATCH_MAX_TOTAL = 64 * 1024 * 1024;
 const SMALL_BATCH_MAX_FILE = PHONE_RELAY_THRESHOLD;
 const ACCEPT_TIMEOUT_MS = 120000;
+const RELAY_PACE_POLL_MS = 120;
+const RELAY_STATE_CACHE_MS = 300;
+const RELAY_MIN_TARGET_BUFFER = 8 * 1024 * 1024;
+const RELAY_MAX_TARGET_BUFFER = 96 * 1024 * 1024;
+const RELAY_PACING_FLAG = 'crosslan:relay-pacing';
 const ZIP32_MAX = 0xffffffff;
 const ZIP_CHUNK_SIZE = 4 * 1024 * 1024;
 const textEncoder = new TextEncoder();
 const messages = {
   zh: {
-    local: '本机', connecting: '正在连接信令服务', online: '在线', offline: '离线', devices: '局域网设备', selectTarget: '选择目标设备', refresh: '刷新', emptyDevices: '在同一局域网的另一台设备打开 CrossLAN，它会出现在这里。', deviceId: '设备 ID', lastSeen: '最后在线', transfers: '传输', noTransfers: '还没有传输任务。', cancel: '取消', send: '发送', receive: '接收', openDownload: '打开下载', storage: '存储', saveDirectory: 'PC 保存目录', storageHint: '发送到这台 PC 的大文件会直接保存到这里。Docker 通常映射到 /data/CrossLAN。', savePath: '保存路径', network: '网络', speedLimit: '速度限制', unlimited: '不限速', manual: '手动', auto: '自动', diagnostics: '诊断', recentEvents: '最近事件', clear: '清空', noDebugEvents: '暂无诊断事件。', direct: '直存', browserDownload: '浏览器下载', p2p: 'P2P', measuring: '测速中', receivePrompt: '接收', receiveLargePrompt: '接收大文件', receiverRejected: '接收方已拒绝文件。', waitingSender: '已接受，等待发送方...', waitingLink: '已接受，等待下载链接...', receiveComplete: '接收完成', savingDisk: '正在写入 PC 磁盘...', downloadReady: '下载已准备好。如果没有自动打开，请点“打开下载”。', sentDownloadManager: '已交给浏览器下载管理器。', waitConfirm: '等待对方确认...', waitPhoneConfirm: '等待手机确认...', savedToPc: '已保存到 PC', preparingPhone: '正在为手机准备浏览器下载...', linkSentPhone: '下载链接已发送到手机。', loadStorage: '正在读取保存目录...', loadStorageFailed: '读取保存目录失败。', saveStorageFailed: '保存目录失败。', current: '当前', saved: '已保存', parseFailed: '无法解析服务器响应。', uploadHttpFailed: '上传失败', uploadNetworkFailed: '上传失败：无法连接到 PC 服务。', cancelled: '传输已取消。', remoteCancelled: '对方已取消传输。', confirmTimeout: '等待对方确认超时。', failed: '传输失败。', duplicateSending: '这个文件正在传输中，已沿用现有任务。', duplicateIncoming: '相同文件已有接收任务，已忽略重复请求。', receivingRelay: '正在通过内存流式中继传输...', packagingBatch: '正在打包批量文件...', batchLabel: '批量文件'
+    local: '本机', connecting: '正在连接信令服务', online: '在线', offline: '离线', devices: '局域网设备', selectTarget: '选择目标设备', refresh: '刷新', emptyDevices: '在同一局域网的另一台设备打开 CrossLAN，它会出现在这里。', deviceId: '设备 ID', lastSeen: '最后在线', transfers: '传输', noTransfers: '还没有传输任务。', clearTransfers: '清空任务', cancel: '取消', send: '发送', receive: '接收', openDownload: '打开下载', storage: '存储', saveDirectory: '服务主机保存目录', storageHint: '发送到运行 CrossLAN 服务的这台主机的大文件会直接保存到这里。Docker 通常映射到 /data/CrossLAN。', savePath: '保存路径', network: '网络', speedLimit: '速度限制', uploadLimitHint: '限速仅限制本机作为发送方的上传速度；浏览器下载速度由接收端和网络决定。', currentSpeed: '当前', averageSpeed: '平均', peakSpeed: '峰值', elapsed: '用时', unlimited: '不限速', manual: '手动', mbps: 'Mbps', direct: '直存', browserDownload: '浏览器下载', p2p: 'P2P', measuring: '测速中', receivePrompt: '接收', receiveLargePrompt: '接收大文件', receiverRejected: '接收方已拒绝文件。', waitingSender: '已接受，等待发送方...', waitingLink: '已接受，等待下载链接...', receiveComplete: '接收完成', savingDisk: '正在写入服务主机磁盘...', downloadReady: '下载已准备好。如果没有自动打开，请点“打开下载”。', sentDownloadManager: '已交给浏览器下载管理器。', waitConfirm: '等待对方确认...', waitPhoneConfirm: '等待接收端确认...', savedToPc: '已保存到服务主机', preparingPhone: '正在为接收端准备浏览器下载...', linkSentPhone: '下载链接已发送到接收端。', loadStorage: '正在读取保存目录...', loadStorageFailed: '读取保存目录失败。', saveStorageFailed: '保存目录失败。', current: '当前', saved: '已保存', parseFailed: '无法解析服务器响应。', uploadHttpFailed: '上传失败', uploadNetworkFailed: '上传失败：无法连接到 CrossLAN 服务。', cancelled: '传输已取消。', remoteCancelled: '对方已取消传输。', confirmTimeout: '等待对方确认超时。', failed: '传输失败。', duplicateSending: '这个文件正在传输中，已沿用现有任务。', duplicateIncoming: '相同文件已有接收任务，已忽略重复请求。', receivingRelay: '正在通过内存流式中继传输...', packagingBatch: '正在打包批量文件...', batchLabel: '批量文件'
   },
   en: {
-    local: 'Local', connecting: 'Connecting to signaling server', online: 'Online', offline: 'Offline', devices: 'LAN devices', selectTarget: 'Select target device', refresh: 'Refresh', emptyDevices: 'Open CrossLAN on another device in the same LAN and it will appear here.', deviceId: 'Device ID', lastSeen: 'Last seen', transfers: 'Transfers', noTransfers: 'No transfers yet.', cancel: 'Cancel', send: 'Send', receive: 'Receive', openDownload: 'Open download', storage: 'Storage', saveDirectory: 'PC save directory', storageHint: 'Large files sent to this PC are saved directly here. Docker usually maps this to /data/CrossLAN.', savePath: 'Save path', network: 'Network', speedLimit: 'Speed limit', unlimited: 'Unlimited', manual: 'Manual', auto: 'Auto', diagnostics: 'Diagnostics', recentEvents: 'Recent events', clear: 'Clear', noDebugEvents: 'No debug events yet.', direct: 'Direct save', browserDownload: 'Browser download', p2p: 'P2P', measuring: 'measuring', receivePrompt: 'Receive', receiveLargePrompt: 'Receive large file', receiverRejected: 'Receiver rejected the file.', waitingSender: 'Accepted. Waiting for sender...', waitingLink: 'Accepted. Waiting for download link...', receiveComplete: 'Receive complete', savingDisk: 'Saving to PC disk...', downloadReady: 'Download ready. If it did not open, tap Open download.', sentDownloadManager: 'Sent to browser download manager.', waitConfirm: 'Waiting for receiver confirmation...', waitPhoneConfirm: 'Waiting for phone confirmation...', savedToPc: 'Saved to PC', preparingPhone: 'Preparing browser download for phone...', linkSentPhone: 'Download link sent to phone.', loadStorage: 'Loading save directory...', loadStorageFailed: 'Failed to load save directory.', saveStorageFailed: 'Failed to save directory.', current: 'Current', saved: 'Saved', parseFailed: 'Failed to parse server response.', uploadHttpFailed: 'Upload failed', uploadNetworkFailed: 'Upload failed: cannot connect to PC service.', cancelled: 'Transfer cancelled.', remoteCancelled: 'Peer cancelled the transfer.', confirmTimeout: 'Timed out waiting for receiver confirmation.', failed: 'Transfer failed.', duplicateSending: 'This file is already being transferred. Reusing the existing task.', duplicateIncoming: 'The same file already has a receive task. Ignoring the duplicate request.', receivingRelay: 'Streaming through memory relay...', packagingBatch: 'Packaging batch files...', batchLabel: 'Batch files' }
+    local: 'Local', connecting: 'Connecting to signaling server', online: 'Online', offline: 'Offline', devices: 'LAN devices', selectTarget: 'Select target device', refresh: 'Refresh', emptyDevices: 'Open CrossLAN on another device in the same LAN and it will appear here.', deviceId: 'Device ID', lastSeen: 'Last seen', transfers: 'Transfers', noTransfers: 'No transfers yet.', clearTransfers: 'Clear tasks', cancel: 'Cancel', send: 'Send', receive: 'Receive', openDownload: 'Open download', storage: 'Storage', saveDirectory: 'Service host save directory', storageHint: 'Large files sent to the host running CrossLAN are saved directly here. Docker usually maps this to /data/CrossLAN.', savePath: 'Save path', network: 'Network', speedLimit: 'Speed limit', uploadLimitHint: 'The limit only throttles uploads from this browser; browser download speed is controlled by the receiver and network.', currentSpeed: 'Now', averageSpeed: 'Avg', peakSpeed: 'Peak', elapsed: 'Time', unlimited: 'Unlimited', manual: 'Manual', mbps: 'Mbps', direct: 'Direct save', browserDownload: 'Browser download', p2p: 'P2P', measuring: 'measuring', receivePrompt: 'Receive', receiveLargePrompt: 'Receive large file', receiverRejected: 'Receiver rejected the file.', waitingSender: 'Accepted. Waiting for sender...', waitingLink: 'Accepted. Waiting for download link...', receiveComplete: 'Receive complete', savingDisk: 'Saving to host disk...', downloadReady: 'Download ready. If it did not open, tap Open download.', sentDownloadManager: 'Sent to browser download manager.', waitConfirm: 'Waiting for receiver confirmation...', waitPhoneConfirm: 'Waiting for receiver confirmation...', savedToPc: 'Saved to service host', preparingPhone: 'Preparing browser download for receiver...', linkSentPhone: 'Download link sent to receiver.', loadStorage: 'Loading save directory...', loadStorageFailed: 'Failed to load directory.', saveStorageFailed: 'Failed to save directory.', current: 'Current', saved: 'Saved', parseFailed: 'Failed to parse server response.', uploadHttpFailed: 'Upload failed', uploadNetworkFailed: 'Upload failed: cannot connect to CrossLAN service.', cancelled: 'Transfer cancelled.', remoteCancelled: 'Peer cancelled the transfer.', confirmTimeout: 'Timed out waiting for receiver confirmation.', failed: 'Transfer failed.', duplicateSending: 'This file is already being transferred. Reusing the existing task.', duplicateIncoming: 'The same file already has a receive task. Ignoring the duplicate request.', receivingRelay: 'Streaming through memory relay...', packagingBatch: 'Packaging batch files...', batchLabel: 'Batch files' }
 };
 
 type PendingAccept = { resolve: () => void; reject: (error: Error) => void; timer: number };
 type DebugLevel = 'info' | 'warn' | 'error';
-type DebugLog = { id: number; time: string; level: DebugLevel; message: string; details?: string };
-
-const DEBUG_LOG_LIMIT = 120;
+type RelayState = { ok: boolean; failed?: boolean; message?: string; bufferBytes: number; bufferedBytes: number };
 
 const identity = new DeviceIdentity();
 const store = new DeviceStore();
@@ -156,21 +151,22 @@ const connected = ref(false);
 const localIdentity = ref<LocalIdentity | null>(null);
 const devices = ref<DeviceRecord[]>([]);
 const progress = ref(new Map<string, TransferProgress>());
-const debugLogs = ref<DebugLog[]>([]);
-const speedSamples = new Map<string, { startedAt: number; lastAt: number; lastBytes: number }>();
+const speedSamples = new Map<string, { startedAt: number; lastAt: number; lastBytes: number; direction: TransferProgress['direction']; mode?: TransferProgress['mode'] }>();
 const lastDebugProgressAt = new Map<string, number>();
 const pendingDirectAccepts = new Map<string, PendingAccept>();
 const pendingRelayAccepts = new Map<string, PendingAccept>();
-const activeUploads = new Map<string, XMLHttpRequest>();
+const activeUploads = new Map<string, { abort: () => void }>();
 const activePeers = new Map<string, string>();
 const activeSendKeys = new Map<string, string>();
 const incomingPromptKeys = new Map<string, string>();
 const activeTransferKeys = new Map<string, string>();
+const relayStateCache = new Map<string, { checkedAt: number; state: RelayState }>();
 const autoDownloadedTransfers = new Set<string>();
+const cancelledTransfers = new Set<string>();
 const fileInput = ref<HTMLInputElement | null>(null);
 const pendingTarget = ref<DeviceRecord | null>(null);
 const bandwidthMode = ref<BandwidthMode>('unlimited');
-const manualLimitMbps = ref(80);
+const manualLimitMbps = ref(100);
 const saveDirInput = ref('');
 const storageMessage = ref(messages.zh.loadStorage);
 const storageStatusOk = ref(true);
@@ -179,6 +175,13 @@ const isZh = computed(() => navigator.language.toLowerCase().startsWith('zh'));
 const t = computed(() => isZh.value ? messages.zh : messages.en);
 const localStatus = computed(() => localIdentity.value ? `${t.value.local} ${localIdentity.value.ip}` : t.value.connecting);
 const protocolLabel = computed(() => location.protocol === 'https:' ? 'HTTPS' : 'HTTP LAN');
+const isServiceHost = computed(() => {
+  const host = location.hostname;
+  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return true;
+  const local = localIdentity.value;
+  if (!local) return false;
+  return local.serverIps.includes(local.ip);
+});
 
 onMounted(() => {
   addLog('app mounted', { href: location.href, userAgent: navigator.userAgent });
@@ -220,9 +223,15 @@ onUnmounted(cleanup);
 watch([bandwidthMode, manualLimitMbps], () => {
   engine.setBandwidthLimit({
     mode: bandwidthMode.value,
-    bytesPerSecond: bandwidthMode.value === 'manual' ? (manualLimitMbps.value * 1024 * 1024) / 8 : null
+    bytesPerSecond: getManualLimitBytesPerSecond()
   });
 });
+
+function getManualLimitBytesPerSecond() {
+  const mbps = Number(manualLimitMbps.value);
+  if (bandwidthMode.value !== 'manual' || !Number.isFinite(mbps) || mbps <= 0) return null;
+  return (mbps * 1000 * 1000) / 8;
+}
 
 async function handleAppMessage(message: SignalingMessage) {
   if (message.type === 'hello') {
@@ -258,6 +267,7 @@ async function handleAppMessage(message: SignalingMessage) {
   }
 
   if (message.type === 'direct-transfer-complete') {
+    if (cancelledTransfers.has(message.transferId)) return;
     updateDirectReceiveProgress(message.transferId, message.fileName, message.bytesTransferred, message.totalBytes, true, `${t.value.savedToPc}: ${message.path}`);
     disableWakeLock();
     return;
@@ -276,6 +286,7 @@ async function handleAppMessage(message: SignalingMessage) {
       mode: 'direct',
       statusText: message.message
     });
+    clearTransferBookkeeping(message.transferId);
     disableWakeLock();
     return;
   }
@@ -301,7 +312,8 @@ async function handleAppMessage(message: SignalingMessage) {
   }
 
   if (message.type === 'relay-transfer-ready') {
-    updateStatus(message.transferId, t.value.sentDownloadManager);
+    if (cancelledTransfers.has(message.transferId)) return;
+    handleRelayTransferReady(message.transferId, message.fileName, message.bytesWritten || 0);
     return;
   }
 
@@ -335,29 +347,8 @@ function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 function addLog(message: string, details?: unknown, level: DebugLevel = 'info') {
-  const entry: DebugLog = {
-    id: Date.now() + Math.floor(Math.random() * 1000),
-    time: new Date().toLocaleTimeString(),
-    level,
-    message,
-    details: details === undefined ? undefined : stringifyDetails(details)
-  };
-  debugLogs.value = [entry, ...debugLogs.value].slice(0, DEBUG_LOG_LIMIT);
   const method = level === 'error' ? console.error : level === 'warn' ? console.warn : console.info;
   method('[CrossLAN]', message, details ?? '');
-}
-
-function clearLogs() {
-  debugLogs.value = [];
-  addLog('debug log cleared');
-}
-
-function stringifyDetails(details: unknown) {
-  try {
-    return JSON.stringify(details, null, 2);
-  } catch {
-    return String(details);
-  }
 }
 
 function summarizeMessage(message: SignalingMessage) {
@@ -511,7 +502,6 @@ async function handleRelayTransferRequest(from: string, meta: FileMeta) {
   signaling.send({ type: 'relay-transfer-accept', to: from, transferId: meta.transferId });
   addLog('relay request accepted', { to: from, transferId: meta.transferId, downloadUrl: absoluteUrl });
   triggerBrowserDownload(absoluteUrl, meta.name);
-  signaling.send({ type: 'relay-transfer-ready', to: from, transferId: meta.transferId, fileName: meta.name, downloadUrl, bytesWritten: 0 });
 }
 function waitForPending(map: Map<string, PendingAccept>, transferId: string) {
   return new Promise<void>((resolve, reject) => {
@@ -558,6 +548,7 @@ function trackIncomingTransfer(from: string, meta: FileMeta, mode: 'direct' | 'r
 }
 
 function updateDirectReceiveProgress(transferId: string, fileName: string, bytesTransferred: number, totalBytes: number, done: boolean, statusText?: string) {
+  if (cancelledTransfers.has(transferId)) return;
   const current = progress.value.get(transferId);
   if (current?.direction === 'send') return;
   const item = withSpeedSample({
@@ -573,27 +564,74 @@ function updateDirectReceiveProgress(transferId: string, fileName: string, bytes
     statusText: statusText || (done ? t.value.receiveComplete : t.value.savingDisk)
   });
   progress.value = new Map(progress.value).set(transferId, item);
+  if (done) clearTransferBookkeeping(transferId);
 }
 
 function updateRelayTransferProgress(transferId: string, fileName: string, bytesTransferred: number, totalBytes: number) {
+  if (cancelledTransfers.has(transferId)) return;
   const current = progress.value.get(transferId);
   if (current?.done) return;
+  if (current?.direction === 'send') {
+    setProgress({
+      ...current,
+      fileName: current.fileName || fileName,
+      totalBytes: Math.max(current.totalBytes || 0, totalBytes || 0),
+      statusText: current.statusText || t.value.preparingPhone
+    });
+    return;
+  }
   const direction = current?.direction || 'receive';
+  const done = totalBytes > 0 && bytesTransferred >= totalBytes;
   setProgress(withSpeedSample({
     id: transferId,
     direction,
     fileName,
     bytesTransferred,
     totalBytes,
-    done: false,
+    done,
     mode: 'relay',
-    cancellable: true,
+    cancellable: !done,
     peerId: current?.peerId,
-    statusText: direction === 'send' ? t.value.receivingRelay : t.value.receivingRelay
+    statusText: done ? t.value.receiveComplete : current?.statusText || t.value.receivingRelay
   }));
+  if (done) {
+    clearTransferBookkeeping(transferId);
+    disableWakeLock();
+  }
+}
+
+function handleRelayTransferReady(transferId: string, fileName: string, bytesWritten: number) {
+  if (cancelledTransfers.has(transferId)) return;
+  const current = progress.value.get(transferId);
+  if (!current) return;
+  if (current.direction === 'receive') {
+    setProgress({
+      ...current,
+      fileName: current.fileName || fileName,
+      cancellable: true,
+      needsUserSave: false,
+      statusText: current.bytesTransferred > 0 ? t.value.receivingRelay : t.value.sentDownloadManager
+    });
+    return;
+  }
+
+  const totalBytes = Math.max(current.totalBytes || 0, bytesWritten || 0);
+  setProgress(withSpeedSample({
+    ...current,
+    fileName: current.fileName || fileName,
+    bytesTransferred: totalBytes,
+    totalBytes,
+    done: true,
+    cancellable: false,
+    needsUserSave: false,
+    statusText: t.value.sentDownloadManager
+  }));
+  clearTransferBookkeeping(transferId);
+  disableWakeLock();
 }
 
 function handleRelayTransferError(transferId: string, fileName = 'Relay file', message: string) {
+  if (cancelledTransfers.has(transferId)) return;
   const current = progress.value.get(transferId);
   if (current?.direction === 'send') return;
   addLog('relay transfer error received', { transferId, fileName, direction: current?.direction, message }, 'warn');
@@ -617,29 +655,63 @@ function withSpeedSample(item: TransferProgress): TransferProgress {
   const now = performance.now();
   const previous = speedSamples.get(item.id);
   const current = progress.value.get(item.id);
+  const startedAt = current?.startedAt || item.startedAt || now;
   const safeTotal = Math.max(item.totalBytes || 0, current?.totalBytes || 0);
   const safeBytes = item.done
     ? Math.max(item.bytesTransferred || 0, current?.bytesTransferred || 0)
     : Math.min(safeTotal || item.bytesTransferred || 0, Math.max(item.bytesTransferred || 0, current?.bytesTransferred || 0));
-  const normalized = { ...item, bytesTransferred: safeBytes, totalBytes: safeTotal || item.totalBytes };
-  if (!previous) {
-    speedSamples.set(item.id, { startedAt: now, lastAt: now, lastBytes: normalized.bytesTransferred });
-    return normalized;
+  const normalized = { ...item, bytesTransferred: safeBytes, totalBytes: safeTotal || item.totalBytes, startedAt, completedAt: item.done ? item.completedAt || now : item.completedAt };
+  const needsNewSample = !previous || previous.direction !== normalized.direction || previous.mode !== normalized.mode;
+  const baseSample = needsNewSample
+    ? { startedAt, lastAt: now, lastBytes: current?.bytesTransferred ?? 0, direction: normalized.direction, mode: normalized.mode }
+    : previous;
+
+  if (needsNewSample) {
+    speedSamples.set(item.id, baseSample);
+    if (!normalized.done) return normalized;
   }
 
-  const deltaMs = Math.max(now - previous.lastAt, 1);
-  const deltaBytes = Math.max(normalized.bytesTransferred - previous.lastBytes, 0);
-  const elapsedSeconds = Math.max((now - previous.startedAt) / 1000, 0.001);
+  if (normalized.done) {
+    const sample = speedSamples.get(item.id) || baseSample;
+    const sampleStartedAt = sample.startedAt || startedAt;
+    const completedAt = normalized.completedAt || now;
+    const elapsedSeconds = Math.max((completedAt - sampleStartedAt) / 1000, 0.001);
+    const finalDeltaMs = Math.max(completedAt - sample.lastAt, 1);
+    const finalDeltaBytes = Math.max(normalized.bytesTransferred - sample.lastBytes, 0);
+    const finalInstantSpeed = (finalDeltaBytes / finalDeltaMs) * 1000;
+    const peak = Math.max(current?.peakBytesPerSecond || 0, current?.speedBytesPerSecond || 0, Number.isFinite(finalInstantSpeed) ? finalInstantSpeed : 0);
+    speedSamples.set(item.id, { ...sample, lastAt: completedAt, lastBytes: normalized.bytesTransferred });
+    return {
+      ...normalized,
+      completedAt,
+      speedBytesPerSecond: 0,
+      averageBytesPerSecond: normalized.bytesTransferred / elapsedSeconds,
+      peakBytesPerSecond: peak || current?.peakBytesPerSecond
+    };
+  }
+
+  const sample = speedSamples.get(item.id) || baseSample;
+  const deltaMs = Math.max(now - sample.lastAt, 1);
+  const deltaBytes = Math.max(normalized.bytesTransferred - sample.lastBytes, 0);
+  const elapsedSeconds = Math.max((now - sample.startedAt) / 1000, 0.001);
   const sampled = {
     ...normalized,
-    speedBytesPerSecond: (deltaBytes / deltaMs) * 1000,
-    averageBytesPerSecond: normalized.bytesTransferred / elapsedSeconds
+    speedBytesPerSecond: smoothSpeed(current?.speedBytesPerSecond, (deltaBytes / deltaMs) * 1000),
+    averageBytesPerSecond: normalized.bytesTransferred / elapsedSeconds,
+    peakBytesPerSecond: Math.max(current?.peakBytesPerSecond || 0, current?.speedBytesPerSecond || 0, (deltaBytes / deltaMs) * 1000)
   };
-  speedSamples.set(item.id, { ...previous, lastAt: now, lastBytes: normalized.bytesTransferred });
+  speedSamples.set(item.id, { ...sample, lastAt: now, lastBytes: normalized.bytesTransferred });
   return sampled;
 }
 
+function smoothSpeed(previousSpeed: number | undefined, instantSpeed: number) {
+  if (!Number.isFinite(instantSpeed)) return previousSpeed;
+  if (!previousSpeed || !Number.isFinite(previousSpeed)) return instantSpeed;
+  return previousSpeed * 0.72 + instantSpeed * 0.28;
+}
+
 function maybeAutoDownload(item: TransferProgress): TransferProgress {
+  if (cancelledTransfers.has(item.id)) return { ...item, downloadUrl: undefined, needsUserSave: false };
   if (!item.downloadUrl || !item.needsUserSave || autoDownloadedTransfers.has(item.id)) return item;
   autoDownloadedTransfers.add(item.id);
   triggerBrowserDownload(item.downloadUrl, item.fileName);
@@ -664,29 +736,20 @@ function shouldDirectSave(target: DeviceRecord, file: File) {
 }
 
 function shouldRelayToBrowserDownload(target: DeviceRecord, file: File) {
-  return file.size >= PHONE_RELAY_THRESHOLD && !canDirectSaveTo(target);
+  return file.size >= PHONE_RELAY_THRESHOLD && !shouldDirectSave(target, file);
 }
 
 function canDirectSaveTo(target: DeviceRecord) {
   const serverIps = localIdentity.value?.serverIps ?? [];
   if (serverIps.includes(target.ip)) return true;
   if (target.ip === location.hostname || target.id === location.hostname) return true;
-  return isDesktopUserAgent(target.userAgent);
+  return false;
 }
 
 
 function deviceReceiveModeLabel(device: DeviceRecord) {
   if (canDirectSaveTo(device)) return t.value.direct;
   return t.value.browserDownload;
-}
-
-function isDesktopUserAgent(userAgent?: string | null) {
-  if (!userAgent) return false;
-  return !isMobileUserAgent(userAgent);
-}
-
-function isMobileUserAgent(userAgent?: string | null) {
-  return /Mobile|Android|iPhone|iPad|iPod/i.test(userAgent || '');
 }
 
 async function sendDirectToServer(target: DeviceRecord, file: File) {
@@ -727,7 +790,7 @@ async function sendDirectToServer(target: DeviceRecord, file: File) {
     updateStatus(id, t.value.savingDisk);
 
     const result = await uploadWithProgress(file, id, uploaded => updateUploaded(id, uploaded));
-    setProgress({
+    setProgress(withSpeedSample({
       id,
       direction: 'send',
       fileName: file.name,
@@ -738,7 +801,7 @@ async function sendDirectToServer(target: DeviceRecord, file: File) {
       cancellable: false,
       peerId: target.id,
       statusText: `${t.value.savedToPc}: ${result.path}`
-    });
+    }));
   } catch (error) {
     markFailed(id, file, 'direct', error);
   } finally {
@@ -786,6 +849,7 @@ async function sendRelayToBrowserDownload(target: DeviceRecord, file: File) {
     updateStatus(id, t.value.preparingPhone);
 
     const result = await uploadRelayWithProgress(file, id, uploaded => {
+      updateUploaded(id, uploaded);
       addRelayUploadDebug(id, uploaded, file.size);
     });
     addLog('relay upload finished', { transferId: id, result });
@@ -798,7 +862,7 @@ async function sendRelayToBrowserDownload(target: DeviceRecord, file: File) {
       bytesWritten: result.bytesWritten
     });
 
-    setProgress({
+    setProgress(withSpeedSample({
       id,
       direction: 'send',
       fileName: file.name,
@@ -808,8 +872,8 @@ async function sendRelayToBrowserDownload(target: DeviceRecord, file: File) {
       mode: 'relay',
       cancellable: false,
       peerId: target.id,
-      statusText: t.value.sentDownloadManager
-    });
+      statusText: t.value.linkSentPhone
+    }));
   } catch (error) {
     markFailed(id, file, 'relay', error);
   } finally {
@@ -821,8 +885,11 @@ async function sendRelayToBrowserDownload(target: DeviceRecord, file: File) {
 
 function cancelTransfer(item: TransferProgress) {
   addLog('transfer cancel requested', { transferId: item.id, direction: item.direction, mode: item.mode, peerId: item.peerId });
+  cancelledTransfers.add(item.id);
+  autoDownloadedTransfers.add(item.id);
   activeUploads.get(item.id)?.abort();
   activeUploads.delete(item.id);
+  engine.cancelTransfer(item.id);
   rejectPending(pendingDirectAccepts, item.id, t.value.cancelled);
   rejectPending(pendingRelayAccepts, item.id, t.value.cancelled);
   const peerId = item.peerId || activePeers.get(item.id);
@@ -831,10 +898,27 @@ function cancelTransfer(item: TransferProgress) {
   disableWakeLock();
 }
 
+function clearTransfers() {
+  const next = new Map<string, TransferProgress>();
+  for (const [id, item] of progress.value.entries()) {
+    if (!item.done) {
+      next.set(id, item);
+      continue;
+    }
+    if (item.downloadUrl?.startsWith('blob:')) URL.revokeObjectURL(item.downloadUrl);
+    clearTransferBookkeeping(id);
+    if (!item.cancelled) autoDownloadedTransfers.delete(id);
+  }
+  progress.value = next;
+}
+
 function handleRemoteCancel(transferId: string, from: string, reason?: string) {
   addLog('remote transfer cancelled', { transferId, from, reason }, 'warn');
+  cancelledTransfers.add(transferId);
+  autoDownloadedTransfers.add(transferId);
   activeUploads.get(transferId)?.abort();
   activeUploads.delete(transferId);
+  engine.cancelTransfer(transferId);
   rejectPending(pendingDirectAccepts, transferId, reason || t.value.remoteCancelled);
   rejectPending(pendingRelayAccepts, transferId, reason || t.value.remoteCancelled);
   markCancelled(transferId, reason || t.value.remoteCancelled, from);
@@ -843,12 +927,30 @@ function handleRemoteCancel(transferId: string, from: string, reason?: string) {
 
 function markCancelled(transferId: string, statusText: string, peerId?: string) {
   const current = progress.value.get(transferId);
-  if (!current) return;
+  if (!current) {
+    progress.value = new Map(progress.value).set(transferId, {
+      id: transferId,
+      direction: 'receive',
+      fileName: 'Transfer',
+      bytesTransferred: 0,
+      totalBytes: 0,
+      done: true,
+      cancellable: false,
+      cancelled: true,
+      peerId,
+      statusText
+    });
+    clearTransferBookkeeping(transferId);
+    return;
+  }
+  if (current.downloadUrl?.startsWith('blob:')) URL.revokeObjectURL(current.downloadUrl);
   setProgress({
     ...current,
     done: true,
     cancellable: false,
     cancelled: true,
+    downloadUrl: undefined,
+    needsUserSave: false,
     peerId: peerId || current.peerId,
     statusText
   });
@@ -932,6 +1034,7 @@ function clearTransferBookkeeping(transferId: string) {
   activePeers.delete(transferId);
   activeUploads.delete(transferId);
   speedSamples.delete(transferId);
+  relayStateCache.delete(transferId);
 }
 
 function createFileMeta(transferId: string, file: File): FileMeta {
@@ -1092,6 +1195,11 @@ function updateUploaded(id: string, uploaded: number) {
 function markFailed(id: string, file: File, mode: 'direct' | 'relay', error: unknown) {
   const message = error instanceof Error ? error.message : t.value.failed;
   const current = progress.value.get(id);
+  if (message === t.value.cancelled || message === t.value.remoteCancelled) {
+    cancelledTransfers.add(id);
+    autoDownloadedTransfers.add(id);
+  }
+  if (current?.downloadUrl?.startsWith('blob:')) URL.revokeObjectURL(current.downloadUrl);
   addLog('transfer failed', { transferId: id, file: file.name, mode, error: message }, message === t.value.cancelled ? 'warn' : 'error');
   setProgress({
     id,
@@ -1103,6 +1211,8 @@ function markFailed(id: string, file: File, mode: 'direct' | 'relay', error: unk
     mode,
     cancellable: false,
     cancelled: message === t.value.cancelled || message === t.value.remoteCancelled,
+    downloadUrl: undefined,
+    needsUserSave: false,
     peerId: current?.peerId,
     statusText: message
   });
@@ -1117,18 +1227,30 @@ function addRelayUploadDebug(transferId: string, uploaded: number, totalBytes: n
 }
 
 function uploadWithProgress(file: File, transferId: string, onProgress: (uploaded: number) => void) {
+  if (shouldThrottleHttpUpload()) {
+    return uploadFileChunkedWithThrottle<{ path: string; bytesWritten: number }>(`/api/transfers/direct/${encodeURIComponent(transferId)}/chunk`, file, transferId, onProgress);
+  }
   return uploadFileWithProgress<{ path: string; bytesWritten: number }>('/api/transfers/direct', file, transferId, onProgress);
 }
 
 function uploadRelayWithProgress(file: File, transferId: string, onProgress: (uploaded: number) => void) {
+  if (shouldThrottleHttpUpload()) {
+    return uploadFileChunkedWithThrottle<{ fileName: string; bytesWritten: number }>(`/api/transfers/relay/${encodeURIComponent(transferId)}/chunk`, file, transferId, onProgress);
+  }
+  if (isRelayPacingEnabled() && supportsStreamingUpload()) return uploadRelayStreamWithPacing(file, transferId, onProgress);
+  addLog('relay upload using stable xhr path', { transferId, file: file.name, size: file.size, pacingEnabled: isRelayPacingEnabled() });
   return uploadFileWithProgress<{ fileName: string; bytesWritten: number }>(`/api/transfers/relay/${encodeURIComponent(transferId)}`, file, transferId, onProgress);
+}
+
+function shouldThrottleHttpUpload() {
+  return Boolean(getManualLimitBytesPerSecond());
 }
 
 function uploadFileWithProgress<T extends Record<string, unknown>>(endpoint: string, file: File, transferId: string | undefined, onProgress: (uploaded: number) => void) {
   return new Promise<T>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('POST', endpoint);
-    if (transferId) activeUploads.set(transferId, xhr);
+    if (transferId) activeUploads.set(transferId, { abort: () => xhr.abort() });
     addLog('http upload opened', { endpoint, transferId, file: file.name, size: file.size });
     if (transferId) xhr.setRequestHeader('x-crosslan-transfer-id', transferId);
     xhr.setRequestHeader('x-crosslan-file-name', encodeURIComponent(file.name));
@@ -1178,6 +1300,206 @@ function uploadFileWithProgress<T extends Record<string, unknown>>(endpoint: str
   });
 }
 
+async function uploadFileChunkedWithThrottle<T extends Record<string, unknown>>(endpoint: string, file: File, transferId: string, onProgress: (uploaded: number) => void) {
+  let uploaded = 0;
+  let finalResponse: T | null = null;
+  let throttleStartedAt = performance.now();
+  addLog('throttled chunk upload opened', { endpoint, transferId, file: file.name, size: file.size, limitMbps: manualLimitMbps.value });
+
+  while (uploaded < file.size) {
+    const limit = getManualLimitBytesPerSecond();
+    if (!limit) throttleStartedAt = performance.now();
+    const chunkSize = getThrottleChunkSize(limit);
+    const end = Math.min(uploaded + chunkSize, file.size);
+    const chunk = file.slice(uploaded, end);
+    const isFinal = end >= file.size;
+    const result = await uploadChunk<T>(endpoint, file, chunk, transferId, uploaded, isFinal);
+    uploaded = end;
+    onProgress(uploaded);
+    if (isFinal) finalResponse = result;
+    if (limit) {
+      const idealElapsedMs = (uploaded / limit) * 1000;
+      const waitMs = throttleStartedAt + idealElapsedMs - performance.now();
+      if (waitMs > 1) await sleepForThrottle(waitMs, transferId);
+    }
+  }
+
+  if (!finalResponse) throw new Error(t.value.uploadHttpFailed);
+  return finalResponse;
+}
+
+function getThrottleChunkSize(bytesPerSecond: number | null) {
+  if (!bytesPerSecond) return 1024 * 1024;
+  const targetIntervalMs = 120;
+  const targetBytes = Math.round((bytesPerSecond * targetIntervalMs) / 1000);
+  return Math.min(512 * 1024, Math.max(64 * 1024, targetBytes));
+}
+
+function uploadChunk<T extends Record<string, unknown>>(endpoint: string, file: File, chunk: Blob, transferId: string, offset: number, isFinal: boolean) {
+  return new Promise<T>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', endpoint);
+    activeUploads.set(transferId, { abort: () => xhr.abort() });
+    xhr.setRequestHeader('x-crosslan-transfer-id', transferId);
+    xhr.setRequestHeader('x-crosslan-file-name', encodeURIComponent(file.name));
+    xhr.setRequestHeader('x-crosslan-file-size', String(file.size));
+    xhr.setRequestHeader('x-crosslan-offset', String(offset));
+    xhr.setRequestHeader('x-crosslan-final', isFinal ? '1' : '0');
+    xhr.onload = () => {
+      activeUploads.delete(transferId);
+      let body: Record<string, unknown> = {};
+      try {
+        body = JSON.parse(xhr.responseText || '{}') as Record<string, unknown>;
+      } catch {
+        reject(new Error(t.value.parseFailed));
+        return;
+      }
+      if (xhr.status >= 200 && xhr.status < 300 && body.ok) {
+        resolve(body as T);
+        return;
+      }
+      reject(new Error(String(body.message || `Upload failed: HTTP ${xhr.status}`)));
+    };
+    xhr.onerror = () => {
+      activeUploads.delete(transferId);
+      reject(new Error(t.value.uploadNetworkFailed));
+    };
+    xhr.onabort = () => {
+      activeUploads.delete(transferId);
+      reject(new Error(t.value.cancelled));
+    };
+    xhr.send(chunk);
+  });
+}
+
+function sleepForThrottle(ms: number, transferId: string) {
+  return new Promise<void>((resolve, reject) => {
+    const timer = window.setTimeout(resolve, ms);
+    activeUploads.set(transferId, {
+      abort: () => {
+        window.clearTimeout(timer);
+        reject(new Error(t.value.cancelled));
+      }
+    });
+  }).finally(() => {
+    if (activeUploads.get(transferId)) activeUploads.delete(transferId);
+  });
+}
+
+async function uploadRelayStreamWithPacing(file: File, transferId: string, onProgress: (uploaded: number) => void) {
+  const endpoint = `/api/transfers/relay/${encodeURIComponent(transferId)}`;
+  const controller = new AbortController();
+  activeUploads.set(transferId, { abort: () => controller.abort() });
+  addLog('paced relay upload opened', { endpoint, transferId, file: file.name, size: file.size });
+
+  let uploaded = 0;
+  const reader = file.stream().getReader();
+  const body = new ReadableStream<Uint8Array>({
+    async pull(streamController) {
+      await waitForRelayBufferRoom(transferId, controller.signal);
+      const result = await reader.read();
+      if (result.done) {
+        streamController.close();
+        return;
+      }
+      const chunk = result.value;
+      uploaded += chunk.byteLength;
+      onProgress(uploaded);
+      streamController.enqueue(chunk);
+    },
+    cancel() {
+      void reader.cancel();
+    }
+  });
+
+  try {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'x-crosslan-transfer-id': transferId,
+        'x-crosslan-file-name': encodeURIComponent(file.name),
+        'x-crosslan-file-size': String(file.size)
+      },
+      body,
+      signal: controller.signal,
+      duplex: 'half'
+    } as RequestInit & { duplex: 'half' });
+    const text = await response.text();
+    addLog('paced relay upload response', { endpoint, transferId, status: response.status, response: text.slice(0, 500) });
+    let data: Record<string, unknown> = {};
+    try {
+      data = JSON.parse(text || '{}') as Record<string, unknown>;
+    } catch {
+      throw new Error(t.value.parseFailed);
+    }
+    if (!response.ok || !data.ok) throw new Error(String(data.message || `Upload failed: HTTP ${response.status}`));
+    return data as { fileName: string; bytesWritten: number };
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error(t.value.cancelled);
+    throw error;
+  } finally {
+    activeUploads.delete(transferId);
+  }
+}
+
+function supportsStreamingUpload() {
+  try {
+    let duplexAccessed = false;
+    const body = new ReadableStream({
+      start(controller) {
+        controller.close();
+      }
+    });
+    const request = new Request(location.href, {
+      method: 'POST',
+      body,
+      get duplex() {
+        duplexAccessed = true;
+        return 'half';
+      }
+    } as RequestInit & { duplex: 'half' });
+    return duplexAccessed && request.headers instanceof Headers;
+  } catch {
+    return false;
+  }
+}
+
+function isRelayPacingEnabled() {
+  return localStorage.getItem(RELAY_PACING_FLAG) === '1';
+}
+
+async function waitForRelayBufferRoom(transferId: string, signal: AbortSignal) {
+  while (!signal.aborted) {
+    const state = await fetchRelayState(transferId, signal);
+    if (!state.ok || state.failed) throw new Error(state.message || t.value.failed);
+    const targetBuffered = Math.min(RELAY_MAX_TARGET_BUFFER, Math.max(RELAY_MIN_TARGET_BUFFER, state.bufferBytes * 0.5));
+    if (state.bufferedBytes <= targetBuffered) return;
+    await delay(RELAY_PACE_POLL_MS, signal);
+  }
+  throw new Error(t.value.cancelled);
+}
+
+async function fetchRelayState(transferId: string, signal: AbortSignal) {
+  const cached = relayStateCache.get(transferId);
+  const now = performance.now();
+  if (cached && now - cached.checkedAt < RELAY_STATE_CACHE_MS) return cached.state;
+  const response = await fetch(`/api/transfers/relay/${encodeURIComponent(transferId)}/state`, { signal, cache: 'no-store' });
+  const data = await response.json() as RelayState;
+  if (!response.ok) throw new Error(data.message || `Relay state failed: HTTP ${response.status}`);
+  relayStateCache.set(transferId, { checkedAt: now, state: data });
+  return data;
+}
+
+function delay(ms: number, signal: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    const timer = window.setTimeout(resolve, ms);
+    signal.addEventListener('abort', () => {
+      window.clearTimeout(timer);
+      reject(new Error(t.value.cancelled));
+    }, { once: true });
+  });
+}
+
 async function loadStorageDir() {
   try {
     const response = await fetch('/api/storage');
@@ -1193,6 +1515,11 @@ async function loadStorageDir() {
 }
 
 async function saveStorageDir() {
+  if (!isServiceHost.value) {
+    storageMessage.value = t.value.saveStorageFailed;
+    storageStatusOk.value = false;
+    return;
+  }
   try {
     const response = await fetch('/api/storage', {
       method: 'POST',
@@ -1223,12 +1550,13 @@ function cleanup() {
   pendingDirectAccepts.clear();
   for (const pending of pendingRelayAccepts.values()) window.clearTimeout(pending.timer);
   pendingRelayAccepts.clear();
-  for (const xhr of activeUploads.values()) xhr.abort();
+  for (const upload of activeUploads.values()) upload.abort();
   activeUploads.clear();
   activePeers.clear();
   activeSendKeys.clear();
   incomingPromptKeys.clear();
   activeTransferKeys.clear();
+  relayStateCache.clear();
   disableWakeLock();
   signaling.close();
 }
@@ -1244,8 +1572,15 @@ function modeLabel(mode?: TransferProgress['mode']) {
   return t.value.p2p;
 }
 
+function formatSpeedLine(item: TransferProgress) {
+  if (item.done) {
+    return `${t.value.averageSpeed} ${formatSpeed(item.averageBytesPerSecond)} | ${t.value.peakSpeed} ${formatSpeed(item.peakBytesPerSecond)} | ${t.value.elapsed} ${formatElapsed(item)}`;
+  }
+  return `${t.value.currentSpeed} ${formatSpeed(item.speedBytesPerSecond)} | ${t.value.averageSpeed} ${formatSpeed(item.averageBytesPerSecond)} | ${t.value.peakSpeed} ${formatSpeed(item.peakBytesPerSecond)}`;
+}
+
 function formatSpeed(bytesPerSecond?: number) {
-  if (!bytesPerSecond || !Number.isFinite(bytesPerSecond)) return t.value.measuring;
+  if (bytesPerSecond === undefined || !Number.isFinite(bytesPerSecond)) return t.value.measuring;
   return formatBytes(bytesPerSecond) + '/s';
 }
 
@@ -1254,6 +1589,16 @@ function formatBytes(bytes: number) {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
   return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+function formatElapsed(item: TransferProgress) {
+  if (!item.startedAt || !item.completedAt) return t.value.measuring;
+  const totalSeconds = Math.max(0, Math.round((item.completedAt - item.startedAt) / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) return `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  return `${minutes}:${String(seconds).padStart(2, '0')}`;
 }
 
 function formatTime(ts: number) {
