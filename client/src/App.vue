@@ -782,6 +782,7 @@ function shouldRelayToBrowserDownload(target: DeviceRecord, file: File) {
 }
 
 function canDirectSaveTo(target: DeviceRecord) {
+  if (target.canDirectSave) return true;
   const serverIps = localIdentity.value?.serverIps ?? [];
   if (serverIps.includes(target.ip)) return true;
   if (target.ip === location.hostname || target.id === location.hostname) return true;
@@ -931,6 +932,7 @@ function cancelTransfer(item: TransferProgress) {
   autoDownloadedTransfers.add(item.id);
   activeUploads.get(item.id)?.abort();
   activeUploads.delete(item.id);
+  cleanupServerTransfer(item.id, item.mode);
   engine.cancelTransfer(item.id);
   rejectPending(pendingDirectAccepts, item.id, t.value.cancelled);
   rejectPending(pendingRelayAccepts, item.id, t.value.cancelled);
@@ -960,11 +962,22 @@ function handleRemoteCancel(transferId: string, from: string, reason?: string) {
   autoDownloadedTransfers.add(transferId);
   activeUploads.get(transferId)?.abort();
   activeUploads.delete(transferId);
+  cleanupServerTransfer(transferId, progress.value.get(transferId)?.mode);
   engine.cancelTransfer(transferId);
   rejectPending(pendingDirectAccepts, transferId, reason || t.value.remoteCancelled);
   rejectPending(pendingRelayAccepts, transferId, reason || t.value.remoteCancelled);
   markCancelled(transferId, reason || t.value.remoteCancelled, from);
   disableWakeLock();
+}
+
+function cleanupServerTransfer(transferId: string, mode?: TransferProgress['mode']) {
+  if (mode !== 'direct' && mode !== 'relay') return;
+  fetch(`/api/transfers/${mode}/${encodeURIComponent(transferId)}`, {
+    method: 'DELETE',
+    cache: 'no-store'
+  }).catch(error => {
+    addLog('server transfer cleanup failed', { transferId, mode, error: error instanceof Error ? error.message : String(error) }, 'warn');
+  });
 }
 
 function markCancelled(transferId: string, statusText: string, peerId?: string) {

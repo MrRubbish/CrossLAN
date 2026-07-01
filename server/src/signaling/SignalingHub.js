@@ -34,6 +34,7 @@ export class SignalingHub {
       ip,
       socket,
       userAgent: request.headers['user-agent'] || 'Unknown device',
+      canDirectSave: isServiceHostRequest(request, ip),
       lastSeen: Date.now(),
       connectedAt: Date.now()
     };
@@ -234,6 +235,7 @@ function publicDevice(client) {
     id: client.id,
     ip: client.ip,
     userAgent: client.userAgent,
+    canDirectSave: client.canDirectSave,
     lastSeen: client.lastSeen
   };
 }
@@ -260,6 +262,11 @@ function getClientDeviceId(request) {
 
 function sanitizeDeviceId(value) {
   return String(value || '').replace(/[^a-zA-Z0-9:_-]/g, '').slice(0, 96);
+}
+
+function isServiceHostRequest(request, ip) {
+  const host = String(request.headers.host || '').split(':')[0].toLowerCase();
+  return host === 'localhost' || host === '127.0.0.1' || host === '::1' || ip === '127.0.0.1' || ip === '::1';
 }
 
 function getLocalIpv4Addresses() {

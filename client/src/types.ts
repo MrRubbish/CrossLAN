@@ -4,6 +4,7 @@ export interface DeviceRecord {
   fingerprint?: string | null;
   alias?: string | null;
   userAgent?: string | null;
+  canDirectSave?: boolean;
   lastSeen: number;
 }
 

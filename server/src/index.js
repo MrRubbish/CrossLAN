@@ -217,6 +217,12 @@ app.post('/api/transfers/direct/:transferId/chunk', async (req, res) => {
   }
 });
 
+app.delete('/api/transfers/direct/:transferId', async (req, res) => {
+  const transferId = sanitizePathSegment(req.params.transferId);
+  const cleaned = await cleanupDirectChunkSession(transferId, 'cancelled');
+  res.json({ ok: true, cleaned });
+});
+
 app.post('/api/transfers/relay/:transferId', async (req, res) => {
   const transferId = sanitizePathSegment(req.params.transferId || req.header('x-crosslan-transfer-id') || req.query.transferId || '');
   const fileName = sanitizeFileName(decodeFileName(String(req.header('x-crosslan-file-name') || req.query.name || 'download.bin')));
@@ -347,6 +353,15 @@ app.post('/api/transfers/relay/:transferId/chunk', async (req, res) => {
     console.error('CrossLAN relay chunk upload failed: transferId=' + transferId + ' file=' + fileName + ' ' + (error instanceof Error ? error.message : error));
     if (!res.headersSent) res.status(500).json({ ok: false, message: error instanceof Error ? error.message : 'Relay chunk upload failed.' });
   }
+});
+
+app.delete('/api/transfers/relay/:transferId', (req, res) => {
+  const transferId = sanitizePathSegment(req.params.transferId);
+  const session = relaySessions.get(transferId);
+  if (session) {
+    failRelaySession(transferId, 'Transfer cancelled.');
+  }
+  res.json({ ok: true, cleaned: Boolean(session) });
 });
 
 app.get('/api/transfers/relay/:transferId/state', (req, res) => {
@@ -613,6 +628,17 @@ function clearRelaySessionTimer(session) {
   if (!session.timer) return;
   clearTimeout(session.timer);
   session.timer = null;
+}
+
+async function cleanupDirectChunkSession(transferId, reason) {
+  const session = directChunkSessions.get(transferId);
+  if (!session) return false;
+  directChunkSessions.delete(transferId);
+  console.warn('CrossLAN direct chunk session cleanup: transferId=' + transferId + ' file=' + session.fileName + ' reason=' + reason + ' written=' + formatBytes(session.bytesWritten));
+  session.stream.destroy(new Error(reason || 'Direct transfer cancelled.'));
+  await fs.rm(session.targetPath, { force: true }).catch(() => {});
+  broadcastDirectProgress({ type: 'direct-transfer-error', transferId, fileName: session.fileName, message: reason || 'Direct transfer cancelled.' });
+  return true;
 }
 
 async function writeRequestToStream(req, stream) {
