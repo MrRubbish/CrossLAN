@@ -9,8 +9,30 @@
   --color-amber: 201 138 24;
 }
 
+:root[data-theme='light'] {
+  color-scheme: light;
+  --color-ink: 23 33 31;
+  --color-mist: 247 250 249;
+  --color-panel: 255 255 255;
+  --color-line: 216 228 223;
+  --color-teal: 15 118 110;
+  --color-coral: 220 107 79;
+  --color-amber: 201 138 24;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --color-ink: 227 236 232;
+  --color-mist: 17 23 22;
+  --color-panel: 27 36 34;
+  --color-line: 54 69 65;
+  --color-teal: 45 212 191;
+  --color-coral: 248 129 105;
+  --color-amber: 245 180 65;
+}
+
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme]) {
     color-scheme: dark;
     --color-ink: 227 236 232;
     --color-mist: 17 23 22;
