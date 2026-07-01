@@ -34,7 +34,7 @@ export class SignalingHub {
       ip,
       socket,
       userAgent: request.headers['user-agent'] || 'Unknown device',
-      canDirectSave: isServiceHostRequest(request, ip),
+      canDirectSave: isDirectSaveClient(request) || isServiceHostRequest(request, ip),
       lastSeen: Date.now(),
       connectedAt: Date.now()
     };
@@ -262,6 +262,15 @@ function getClientDeviceId(request) {
 
 function sanitizeDeviceId(value) {
   return String(value || '').replace(/[^a-zA-Z0-9:_-]/g, '').slice(0, 96);
+}
+
+function isDirectSaveClient(request) {
+  try {
+    const url = new URL(request.url || '/', 'http://crosslan.local');
+    return url.searchParams.get('directSave') === '1';
+  } catch {
+    return false;
+  }
 }
 
 function isServiceHostRequest(request, ip) {

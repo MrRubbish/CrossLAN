@@ -11,11 +11,18 @@ export class SignalingClient {
   private reconnectTimer: number | null = null;
   private outboundQueue: Record<string, unknown>[] = [];
   private socketDeviceId = '';
+  private socketDirectSave = false;
+  private closingManually = false;
 
-  connect(deviceId = '') {
+  connect(deviceId = '', directSave = false) {
     this.socketDeviceId = deviceId || this.socketDeviceId;
+    this.socketDirectSave = directSave;
+    this.closingManually = false;
     const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
-    const query = this.socketDeviceId ? `?deviceId=${encodeURIComponent(this.socketDeviceId)}` : '';
+    const params = new URLSearchParams();
+    if (this.socketDeviceId) params.set('deviceId', this.socketDeviceId);
+    if (this.socketDirectSave) params.set('directSave', '1');
+    const query = params.toString() ? `?${params.toString()}` : '';
     const url = `${protocol}://${location.host}/ws${query}`;
     this.emitDebug('ws connecting', { url, readyState: this.socket?.readyState });
     const socket = new WebSocket(url);
@@ -38,6 +45,7 @@ export class SignalingClient {
     socket.addEventListener('close', event => {
       if (this.socket !== socket) return;
       this.emitDebug('ws closed', { code: event.code, reason: event.reason, wasClean: event.wasClean }, 'warn');
+      if (this.closingManually) return;
       this.scheduleReconnect();
     });
     socket.addEventListener('error', () => {
@@ -72,8 +80,19 @@ export class SignalingClient {
 
   close() {
     if (this.reconnectTimer) window.clearTimeout(this.reconnectTimer);
+    this.closingManually = true;
     this.emitDebug('ws close requested');
     this.socket?.close();
+  }
+
+  reconnect(deviceId = this.socketDeviceId, directSave = this.socketDirectSave) {
+    if (this.reconnectTimer) {
+      window.clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.closingManually = true;
+    this.socket?.close();
+    this.connect(deviceId, directSave);
   }
 
   private scheduleReconnect() {
@@ -81,7 +100,7 @@ export class SignalingClient {
     this.emitDebug('ws reconnect scheduled');
     this.reconnectTimer = window.setTimeout(() => {
       this.reconnectTimer = null;
-      this.connect(this.socketDeviceId);
+      this.connect(this.socketDeviceId, this.socketDirectSave);
     }, 1500);
   }
 
