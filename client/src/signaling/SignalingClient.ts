@@ -10,10 +10,13 @@ export class SignalingClient {
   private debugHandlers = new Set<DebugHandler>();
   private reconnectTimer: number | null = null;
   private outboundQueue: Record<string, unknown>[] = [];
+  private socketDeviceId = '';
 
-  connect() {
+  connect(deviceId = '') {
+    this.socketDeviceId = deviceId || this.socketDeviceId;
     const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
-    const url = `${protocol}://${location.host}/ws`;
+    const query = this.socketDeviceId ? `?deviceId=${encodeURIComponent(this.socketDeviceId)}` : '';
+    const url = `${protocol}://${location.host}/ws${query}`;
     this.emitDebug('ws connecting', { url, readyState: this.socket?.readyState });
     const socket = new WebSocket(url);
     this.socket = socket;
@@ -78,7 +81,7 @@ export class SignalingClient {
     this.emitDebug('ws reconnect scheduled');
     this.reconnectTimer = window.setTimeout(() => {
       this.reconnectTimer = null;
-      this.connect();
+      this.connect(this.socketDeviceId);
     }, 1500);
   }
 

@@ -225,7 +225,7 @@ onMounted(() => {
     }
   });
 
-  signaling.connect();
+  signaling.connect(identity.getClientId());
   void loadStorageDir();
   document.addEventListener('visibilitychange', handleVisibility);
   window.addEventListener('beforeunload', cleanup);

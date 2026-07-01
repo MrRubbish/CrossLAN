@@ -1,12 +1,14 @@
 import type { DeviceRecord, LocalIdentity } from '../types';
 
+const DEVICE_ID_KEY = 'crosslan:device-id';
+
 export class DeviceIdentity {
   private current: LocalIdentity | null = null;
+  private readonly deviceId = loadOrCreateDeviceId();
 
   applyServerIdentity(device: DeviceRecord, serverIps: string[]): LocalIdentity {
     this.current = {
       ...device,
-      id: device.ip,
       ip: device.ip,
       fingerprint: this.getFingerprint(),
       alias: device.alias ?? null,
@@ -18,7 +20,11 @@ export class DeviceIdentity {
   }
 
   getDeviceId(): string | null {
-    return this.current?.ip ?? null;
+    return this.current?.id ?? this.deviceId;
+  }
+
+  getClientId(): string {
+    return this.deviceId;
   }
 
   getCurrent(): LocalIdentity | null {
@@ -36,6 +42,15 @@ export class DeviceIdentity {
     // DeviceStore without touching signaling, WebRTC, or transfer code.
     return null;
   }
+}
+
+function loadOrCreateDeviceId() {
+  const existing = localStorage.getItem(DEVICE_ID_KEY);
+  if (existing) return existing;
+  const id = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const value = `device-${id}`;
+  localStorage.setItem(DEVICE_ID_KEY, value);
+  return value;
 }
 
 function compactUserAgent(userAgent?: string | null) {

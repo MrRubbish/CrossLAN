@@ -25,7 +25,8 @@ export class SignalingHub {
 
   handleConnection(socket, request) {
     const ip = normalizeIp(request.socket.remoteAddress);
-    const id = ip || `unknown-${nanoid(6)}`;
+    const clientDeviceId = getClientDeviceId(request);
+    const id = clientDeviceId || ip || `unknown-${nanoid(6)}`;
     const connectionId = `${id}-${nanoid(8)}`;
     const client = {
       connectionId,
@@ -245,6 +246,20 @@ function normalizeIp(address = '') {
     return '127.0.0.1';
   }
   return address;
+}
+
+function getClientDeviceId(request) {
+  try {
+    const url = new URL(request.url || '/', 'http://crosslan.local');
+    const value = String(url.searchParams.get('deviceId') || '');
+    return sanitizeDeviceId(value);
+  } catch {
+    return '';
+  }
+}
+
+function sanitizeDeviceId(value) {
+  return String(value || '').replace(/[^a-zA-Z0-9:_-]/g, '').slice(0, 96);
 }
 
 function getLocalIpv4Addresses() {
