@@ -7,7 +7,7 @@
           <p class="text-sm text-ink/60">{{ localStatus }}</p>
         </div>
         <div class="flex items-center gap-2">
-          <button class="tap border border-line bg-panel px-3 py-1 text-xs font-800 text-ink/65" type="button" :title="themeTitle" @click="cycleTheme">
+          <button class="rounded-full border border-line bg-panel px-3 py-1 text-xs font-700 text-ink/55" type="button" :title="themeTitle" @click="cycleTheme">
             {{ themeButtonLabel }}
           </button>
           <span class="rounded-full border border-line bg-panel px-3 py-1 text-xs font-700 text-ink/55">{{ protocolLabel }}</span>
@@ -27,18 +27,25 @@
             <button class="tap border border-line px-3 text-sm font-700" @click="requestRefresh">{{ t.refresh }}</button>
           </div>
 
-          <div v-if="devices.length === 0" class="rounded-md border border-dashed border-line p-6 text-center text-sm text-ink/55">
+          <div v-if="targetDevices.length === 0" class="rounded-md border border-dashed border-line p-6 text-center text-sm text-ink/55">
             {{ t.emptyDevices }}
           </div>
 
           <div v-else class="grid gap-3 sm:grid-cols-2">
-            <button v-for="device in devices" :key="device.id" class="tap border border-line bg-mist/60 p-4 text-left hover:border-teal/40 hover:bg-panel" @click="chooseAndSend(device)">
-              <div class="flex items-start justify-between gap-3">
-                <div>
-                  <p class="font-800">{{ identity.getDisplayName(device) }}</p>
-                  <p class="mt-1 text-sm text-ink/55">{{ t.deviceId }}: {{ device.id }}</p>
+            <button
+              v-for="device in targetDevices"
+              :key="device.id"
+              class="tap flex min-h-[9rem] flex-col items-stretch justify-start border bg-mist/60 p-4 text-left hover:bg-panel"
+              :class="deviceCardClass(device)"
+              @click="chooseAndSend(device)"
+            >
+              <div class="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
+                <div class="min-w-0">
+                  <p class="break-words font-800 leading-snug">{{ displayDeviceName(device) }}</p>
+                  <p class="mt-1 text-sm text-ink/55">IP: {{ device.ip }}</p>
+                  <p class="mt-1 break-all text-sm text-ink/55">{{ t.deviceId }}: {{ device.id }}</p>
                 </div>
-                <span class="rounded px-2 py-1 text-xs font-700" :class="canDirectSaveTo(device) ? 'bg-teal/10 text-teal' : 'bg-ink/8 text-ink/50'">
+                <span class="shrink-0 whitespace-nowrap rounded px-2 py-1 text-xs font-700" :class="canDirectSaveTo(device) ? 'bg-teal/10 text-teal' : 'bg-ink/8 text-ink/50'">
                   {{ deviceReceiveModeLabel(device) }}
                 </span>
               </div>
@@ -78,17 +85,10 @@
             </div>
           </section>
 
-          <section class="panel p-4">
+          <section v-if="isServiceHost" class="panel p-4">
             <p class="label">{{ t.storage }}</p>
             <h2 class="text-lg font-750">{{ t.saveDirectory }}</h2>
             <p class="mt-2 text-xs text-ink/50">{{ t.storageHint }}</p>
-            <label class="mt-3 flex items-start gap-2 text-sm">
-              <input v-model="directSaveReceiver" class="mt-1" type="checkbox" />
-              <span>
-                <span class="block font-800">{{ t.directSaveReceiver }}</span>
-                <span class="mt-1 block text-xs text-ink/50">{{ t.directSaveReceiverHint }}</span>
-              </span>
-            </label>
             <input v-model="saveDirInput" class="mt-3 w-full rounded-md border border-line bg-panel px-3 py-2 text-sm text-ink" placeholder="/data/CrossLAN" />
             <button class="tap mt-3 w-full bg-ink px-3 py-2 text-sm font-800 text-mist" @click="saveStorageDir">{{ t.savePath }}</button>
             <p class="mt-2 break-all text-xs" :class="storageStatusOk ? 'text-teal' : 'text-coral'">{{ storageMessage }}</p>
@@ -124,7 +124,7 @@ import { DeviceIdentity } from './identity/DeviceIdentity';
 import { SignalingClient } from './signaling/SignalingClient';
 import { DeviceStore } from './storage/DeviceStore';
 import { TransferEngine } from './transfer/TransferEngine';
-import type { BandwidthMode, DeviceRecord, FileMeta, LocalIdentity, SignalingMessage, TransferProgress } from './types';
+import type { BandwidthMode, DeviceRecord, FileMeta, LocalIdentity, ServerMode, SignalingMessage, TransferProgress } from './types';
 
 const PHONE_RELAY_THRESHOLD = 8 * 1024 * 1024;
 const DIRECT_SAVE_THRESHOLD = PHONE_RELAY_THRESHOLD;
@@ -136,23 +136,37 @@ const RELAY_STATE_CACHE_MS = 300;
 const RELAY_MIN_TARGET_BUFFER = 8 * 1024 * 1024;
 const RELAY_MAX_TARGET_BUFFER = 96 * 1024 * 1024;
 const RELAY_PACING_FLAG = 'crosslan:relay-pacing';
+const LOCAL_HEALTH_TIMEOUT_MS = 900;
+const SPEED_SAMPLE_WINDOW_MS = 3500;
+const SPEED_SAMPLE_MIN_INTERVAL_MS = 250;
+const SPEED_DISPLAY_REFRESH_MS = 750;
 const THEME_STORAGE_KEY = 'crosslan:theme';
-const DIRECT_SAVE_RECEIVER_KEY = 'crosslan:direct-save-receiver';
+const SERVICE_HOST_UI_KEY = 'crosslan:service-host-ui';
+const SERVICE_HOST_DEVICE_ID = 'crosslan-service-host';
 const ZIP32_MAX = 0xffffffff;
 const ZIP_CHUNK_SIZE = 4 * 1024 * 1024;
 const textEncoder = new TextEncoder();
 const messages = {
   zh: {
-    local: '本机', connecting: '正在连接信令服务', online: '在线', offline: '离线', themeSystem: '系统', themeLight: '亮色', themeDark: '深色', themeTitle: '切换外观', devices: '局域网设备', selectTarget: '选择目标设备', refresh: '刷新', emptyDevices: '在同一局域网的另一台设备打开 CrossLAN，它会出现在这里。', deviceId: '设备 ID', lastSeen: '最后在线', transfers: '传输', noTransfers: '还没有传输任务。', clearTransfers: '清空任务', cancel: '取消', send: '发送', receive: '接收', openDownload: '打开下载', storage: '存储', saveDirectory: '服务主机保存目录', storageHint: '发送到运行 CrossLAN 服务的这台主机的大文件会直接保存到这里。Docker 通常映射到 /data/CrossLAN。', directSaveReceiver: '本机作为服务主机接收', directSaveReceiverHint: '只在运行 CrossLAN 服务的 PC 上开启；开启后其他设备发来的大文件会直存，不再触发浏览器/IDM 下载。', savePath: '保存路径', network: '网络', speedLimit: '速度限制', uploadLimitHint: '限速仅限制本机作为发送方的上传速度；浏览器下载速度由接收端和网络决定。', currentSpeed: '当前', averageSpeed: '平均', peakSpeed: '峰值', elapsed: '用时', unlimited: '不限速', manual: '手动', mbps: 'Mbps', direct: '直存', browserDownload: '浏览器下载', p2p: 'P2P', measuring: '测速中', receivePrompt: '接收', receiveLargePrompt: '接收大文件', receiverRejected: '接收方已拒绝文件。', waitingSender: '已接受，等待发送方...', waitingLink: '已接受，等待下载链接...', receiveComplete: '接收完成', savingDisk: '正在写入服务主机磁盘...', downloadReady: '下载已准备好。如果没有自动打开，请点“打开下载”。', sentDownloadManager: '已交给浏览器下载管理器。', waitConfirm: '等待对方确认...', waitPhoneConfirm: '等待接收端确认...', savedToPc: '已保存到服务主机', preparingPhone: '正在为接收端准备浏览器下载...', linkSentPhone: '下载链接已发送到接收端。', loadStorage: '正在读取保存目录...', loadStorageFailed: '读取保存目录失败。', saveStorageFailed: '保存目录失败。', current: '当前', saved: '已保存', parseFailed: '无法解析服务器响应。', uploadHttpFailed: '上传失败', uploadNetworkFailed: '上传失败：无法连接到 CrossLAN 服务。', cancelled: '传输已取消。', remoteCancelled: '对方已取消传输。', confirmTimeout: '等待对方确认超时。', failed: '传输失败。', duplicateSending: '这个文件正在传输中，已沿用现有任务。', duplicateIncoming: '相同文件已有接收任务，已忽略重复请求。', receivingRelay: '正在通过内存流式中继传输...', packagingBatch: '正在打包批量文件...', batchLabel: '批量文件'
+    local: '本机', connecting: '正在连接信令服务', online: '在线', offline: '离线', themeSystem: '系统', themeLight: '亮色', themeDark: '深色', themeTitle: '切换外观', devices: '局域网设备', selectTarget: '选择目标设备', refresh: '刷新', emptyDevices: '在同一局域网的另一台设备打开 CrossLAN，它会出现在这里。', deviceId: '设备 ID', lastSeen: '最后在线', transfers: '传输', noTransfers: '还没有传输任务。', clearTransfers: '清空任务', cancel: '取消', send: '发送', receive: '接收', openDownload: '打开下载', storage: '存储', saveDirectory: '服务主机保存目录', storageHint: '发送到运行 CrossLAN 服务的这台主机的大文件会直接保存到这里。Docker 通常映射到 /data/CrossLAN。', directSaveReceiver: '本机作为服务主机接收', directSaveReceiverHint: '只在运行 CrossLAN 服务的 PC 上开启；开启后其他设备发来的大文件会直存，不再触发浏览器/IDM 下载。', savePath: '保存路径', network: '网络', speedLimit: '速度限制', uploadLimitHint: '限速仅限制本机作为发送方的上传速度；浏览器下载速度由接收端和网络决定。', currentSpeed: '当前', averageSpeed: '平均', peakSpeed: '峰值', elapsed: '用时', unlimited: '不限速', manual: '手动', mbps: 'Mbps', direct: '直存', browserDownload: '浏览器下载', browserDownloadMode: '浏览器接收', p2p: 'P2P', measuring: '测速中', receivePrompt: '接收', receiveLargePrompt: '接收大文件', receiverRejected: '接收方已拒绝文件。', waitingSender: '已接受，等待发送方...', waitingLink: '已接受，等待下载链接...', receiveComplete: '接收完成', savingDisk: '正在写入服务主机磁盘...', downloadReady: '下载已准备好。如果没有自动打开，请点“打开下载”。', sentDownloadManager: '已交给浏览器下载管理器。', waitConfirm: '等待对方确认...', waitPhoneConfirm: '等待接收端确认...', savedToPc: '已保存到服务主机', preparingPhone: '正在为接收端准备浏览器下载...', linkSentPhone: '下载链接已发送到接收端。', loadStorage: '正在读取保存目录...', loadStorageFailed: '读取保存目录失败。', saveStorageFailed: '保存目录失败。', current: '当前', saved: '已保存', parseFailed: '无法解析服务器响应。', uploadHttpFailed: '上传失败', uploadNetworkFailed: '上传失败：无法连接到 CrossLAN 服务。', cancelled: '传输已取消。', remoteCancelled: '对方已取消传输。', confirmTimeout: '等待对方确认超时。', failed: '传输失败。', duplicateSending: '这个文件正在传输中，已沿用现有任务。', duplicateIncoming: '相同文件已有接收任务，已忽略重复请求。', receivingRelay: '正在通过内存流式中继传输...', packagingBatch: '正在打包批量文件...', batchLabel: '批量文件'
   },
   en: {
-    local: 'Local', connecting: 'Connecting to signaling server', online: 'Online', offline: 'Offline', themeSystem: 'System', themeLight: 'Light', themeDark: 'Dark', themeTitle: 'Switch appearance', devices: 'LAN devices', selectTarget: 'Select target device', refresh: 'Refresh', emptyDevices: 'Open CrossLAN on another device in the same LAN and it will appear here.', deviceId: 'Device ID', lastSeen: 'Last seen', transfers: 'Transfers', noTransfers: 'No transfers yet.', clearTransfers: 'Clear tasks', cancel: 'Cancel', send: 'Send', receive: 'Receive', openDownload: 'Open download', storage: 'Storage', saveDirectory: 'Service host save directory', storageHint: 'Large files sent to the host running CrossLAN are saved directly here. Docker usually maps this to /data/CrossLAN.', directSaveReceiver: 'Receive as service host', directSaveReceiverHint: 'Enable only on the PC running CrossLAN. Incoming large files are saved directly and will not trigger browser/IDM downloads.', savePath: 'Save path', network: 'Network', speedLimit: 'Speed limit', uploadLimitHint: 'The limit only throttles uploads from this browser; browser download speed is controlled by the receiver and network.', currentSpeed: 'Now', averageSpeed: 'Avg', peakSpeed: 'Peak', elapsed: 'Time', unlimited: 'Unlimited', manual: 'Manual', mbps: 'Mbps', direct: 'Direct save', browserDownload: 'Browser download', p2p: 'P2P', measuring: 'measuring', receivePrompt: 'Receive', receiveLargePrompt: 'Receive large file', receiverRejected: 'Receiver rejected the file.', waitingSender: 'Accepted. Waiting for sender...', waitingLink: 'Accepted. Waiting for download link...', receiveComplete: 'Receive complete', savingDisk: 'Saving to host disk...', downloadReady: 'Download ready. If it did not open, tap Open download.', sentDownloadManager: 'Sent to browser download manager.', waitConfirm: 'Waiting for receiver confirmation...', waitPhoneConfirm: 'Waiting for receiver confirmation...', savedToPc: 'Saved to service host', preparingPhone: 'Preparing browser download for receiver...', linkSentPhone: 'Download link sent to receiver.', loadStorage: 'Loading save directory...', loadStorageFailed: 'Failed to load directory.', saveStorageFailed: 'Failed to save directory.', current: 'Current', saved: 'Saved', parseFailed: 'Failed to parse server response.', uploadHttpFailed: 'Upload failed', uploadNetworkFailed: 'Upload failed: cannot connect to CrossLAN service.', cancelled: 'Transfer cancelled.', remoteCancelled: 'Peer cancelled the transfer.', confirmTimeout: 'Timed out waiting for receiver confirmation.', failed: 'Transfer failed.', duplicateSending: 'This file is already being transferred. Reusing the existing task.', duplicateIncoming: 'The same file already has a receive task. Ignoring the duplicate request.', receivingRelay: 'Streaming through memory relay...', packagingBatch: 'Packaging batch files...', batchLabel: 'Batch files' }
+    local: 'Local', connecting: 'Connecting to signaling server', online: 'Online', offline: 'Offline', themeSystem: 'System', themeLight: 'Light', themeDark: 'Dark', themeTitle: 'Switch appearance', devices: 'LAN devices', selectTarget: 'Select target device', refresh: 'Refresh', emptyDevices: 'Open CrossLAN on another device in the same LAN and it will appear here.', deviceId: 'Device ID', lastSeen: 'Last seen', transfers: 'Transfers', noTransfers: 'No transfers yet.', clearTransfers: 'Clear tasks', cancel: 'Cancel', send: 'Send', receive: 'Receive', openDownload: 'Open download', storage: 'Storage', saveDirectory: 'Service host save directory', storageHint: 'Large files sent to the host running CrossLAN are saved directly here. Docker usually maps this to /data/CrossLAN.', directSaveReceiver: 'Receive as service host', directSaveReceiverHint: 'Enable only on the PC running CrossLAN. Incoming large files are saved directly and will not trigger browser/IDM downloads.', savePath: 'Save path', network: 'Network', speedLimit: 'Speed limit', uploadLimitHint: 'The limit only throttles uploads from this browser; browser download speed is controlled by the receiver and network.', currentSpeed: 'Now', averageSpeed: 'Avg', peakSpeed: 'Peak', elapsed: 'Time', unlimited: 'Unlimited', manual: 'Manual', mbps: 'Mbps', direct: 'Direct save', browserDownload: 'Browser download', browserDownloadMode: 'Browser receive', p2p: 'P2P', measuring: 'measuring', receivePrompt: 'Receive', receiveLargePrompt: 'Receive large file', receiverRejected: 'Receiver rejected the file.', waitingSender: 'Accepted. Waiting for sender...', waitingLink: 'Accepted. Waiting for download link...', receiveComplete: 'Receive complete', savingDisk: 'Saving to host disk...', downloadReady: 'Download ready. If it did not open, tap Open download.', sentDownloadManager: 'Sent to browser download manager.', waitConfirm: 'Waiting for receiver confirmation...', waitPhoneConfirm: 'Waiting for receiver confirmation...', savedToPc: 'Saved to service host', preparingPhone: 'Preparing browser download for receiver...', linkSentPhone: 'Download link sent to receiver.', loadStorage: 'Loading save directory...', loadStorageFailed: 'Failed to load directory.', saveStorageFailed: 'Failed to save directory.', current: 'Current', saved: 'Saved', parseFailed: 'Failed to parse server response.', uploadHttpFailed: 'Upload failed', uploadNetworkFailed: 'Upload failed: cannot connect to CrossLAN service.', cancelled: 'Transfer cancelled.', remoteCancelled: 'Peer cancelled the transfer.', confirmTimeout: 'Timed out waiting for receiver confirmation.', failed: 'Transfer failed.', duplicateSending: 'This file is already being transferred. Reusing the existing task.', duplicateIncoming: 'The same file already has a receive task. Ignoring the duplicate request.', receivingRelay: 'Streaming through memory relay...', packagingBatch: 'Packaging batch files...', batchLabel: 'Batch files' }
 };
 
 type ThemePreference = 'system' | 'light' | 'dark';
 type PendingAccept = { resolve: () => void; reject: (error: Error) => void; timer: number };
 type DebugLevel = 'info' | 'warn' | 'error';
 type RelayState = { ok: boolean; failed?: boolean; message?: string; bufferBytes: number; bufferedBytes: number };
+type HealthResponse = { ok?: boolean; name?: string; deploymentMode?: string; instanceId?: string; serverInstanceId?: string };
+type HostConnectionRole = { directSave: boolean; hostUi: boolean; serverMode?: ServerMode };
+type SpeedSamplePoint = { at: number; bytes: number };
+type SpeedSampleState = {
+  startedAt: number;
+  direction: TransferProgress['direction'];
+  mode?: TransferProgress['mode'];
+  points: SpeedSamplePoint[];
+};
 
 const identity = new DeviceIdentity();
 const store = new DeviceStore();
@@ -163,8 +177,10 @@ const noSleep = new NoSleep();
 const connected = ref(false);
 const localIdentity = ref<LocalIdentity | null>(null);
 const devices = ref<DeviceRecord[]>([]);
+const discoveredDevices = ref<DeviceRecord[]>([]);
+const serverMode = ref<ServerMode>('node');
 const progress = ref(new Map<string, TransferProgress>());
-const speedSamples = new Map<string, { startedAt: number; lastAt: number; lastBytes: number; direction: TransferProgress['direction']; mode?: TransferProgress['mode'] }>();
+const speedSamples = new Map<string, SpeedSampleState>();
 const lastDebugProgressAt = new Map<string, number>();
 const pendingDirectAccepts = new Map<string, PendingAccept>();
 const pendingRelayAccepts = new Map<string, PendingAccept>();
@@ -181,10 +197,11 @@ const pendingTarget = ref<DeviceRecord | null>(null);
 const bandwidthMode = ref<BandwidthMode>('unlimited');
 const manualLimitMbps = ref(100);
 const themePreference = ref<ThemePreference>(loadThemePreference());
-const directSaveReceiver = ref(loadDirectSaveReceiverPreference());
+const serviceHostUi = ref(loadServiceHostUiPreference());
 const saveDirInput = ref('');
 const storageMessage = ref(messages.zh.loadStorage);
 const storageStatusOk = ref(true);
+let speedDisplayTimer: number | null = null;
 const progressItems = computed(() => [...progress.value.values()]);
 const isZh = computed(() => navigator.language.toLowerCase().startsWith('zh'));
 const t = computed(() => isZh.value ? messages.zh : messages.en);
@@ -199,9 +216,32 @@ const themeTitle = computed(() => `${t.value.themeTitle}: ${themeButtonLabel.val
 const isServiceHost = computed(() => {
   const host = location.hostname;
   if (isLoopbackHost(host)) return true;
+  if (serviceHostUi.value) return true;
   const local = localIdentity.value;
   if (!local) return false;
-  return local.serverIps.includes(local.ip);
+  return Boolean(local.canDirectSave || local.serverIps.includes(local.ip));
+});
+const serviceHostTarget = computed<DeviceRecord | null>(() => {
+  const local = localIdentity.value;
+  if (serverMode.value !== 'docker') return null;
+  if (!local) return null;
+  const hostIp = getServiceHostIp(local);
+  const hostBrowser = findServiceHostBrowserDevice(hostIp);
+  return {
+    id: SERVICE_HOST_DEVICE_ID,
+    ip: hostIp,
+    alias: null,
+    userAgent: null,
+    canDirectSave: true,
+    virtual: true,
+    lastSeen: hostBrowser?.lastSeen || Date.now()
+  };
+});
+const targetDevices = computed(() => {
+  if (serviceHostUi.value) return devices.value;
+  if (isServiceHost.value) return devices.value;
+  const serviceHost = serviceHostTarget.value;
+  return serviceHost ? [serviceHost, ...devices.value] : devices.value;
 });
 
 onMounted(() => {
@@ -234,8 +274,9 @@ onMounted(() => {
     }
   });
 
-  signaling.connect(identity.getClientId(), directSaveReceiver.value || isServiceHost.value);
+  void connectSignaling();
   void loadStorageDir();
+  speedDisplayTimer = window.setInterval(refreshActiveSpeedDisplays, SPEED_DISPLAY_REFRESH_MS);
   document.addEventListener('visibilitychange', handleVisibility);
   window.addEventListener('beforeunload', cleanup);
 });
@@ -252,11 +293,6 @@ watch([bandwidthMode, manualLimitMbps], () => {
 watch(themePreference, value => {
   applyThemePreference(value);
   saveThemePreference(value);
-});
-
-watch(directSaveReceiver, value => {
-  localStorage.setItem(DIRECT_SAVE_RECEIVER_KEY, value ? '1' : '0');
-  signaling.reconnect(identity.getClientId(), value || isServiceHost.value);
 });
 
 function getManualLimitBytesPerSecond() {
@@ -283,11 +319,12 @@ function applyThemePreference(value: ThemePreference) {
   document.documentElement.dataset.theme = value;
 }
 
-function loadDirectSaveReceiverPreference() {
-  const stored = localStorage.getItem(DIRECT_SAVE_RECEIVER_KEY);
-  if (stored === '1') return true;
-  if (stored === '0') return false;
-  return isLoopbackHost(location.hostname);
+function loadServiceHostUiPreference() {
+  const params = new URLSearchParams(location.search);
+  const marker = params.get('serviceHost');
+  if (marker === '1') localStorage.setItem(SERVICE_HOST_UI_KEY, '1');
+  if (marker === '0') localStorage.removeItem(SERVICE_HOST_UI_KEY);
+  return localStorage.getItem(SERVICE_HOST_UI_KEY) === '1';
 }
 
 function cycleTheme() {
@@ -300,16 +337,149 @@ function isLoopbackHost(host: string) {
   return host === 'localhost' || host === '127.0.0.1' || host === '::1';
 }
 
+function getServiceHostIp(local: LocalIdentity) {
+  if (location.hostname && !isLoopbackHost(location.hostname)) return location.hostname;
+  return local.serverIps[0] || local.ip || location.hostname;
+}
+
+async function connectSignaling() {
+  const role = await detectHostConnectionRole();
+  if (role.serverMode) serverMode.value = role.serverMode;
+  serviceHostUi.value = role.hostUi;
+  if (!role.hostUi) localStorage.removeItem(SERVICE_HOST_UI_KEY);
+  addLog('signaling role resolved', { directSave: role.directSave, hostUi: role.hostUi, serverMode: role.serverMode, host: location.hostname });
+  signaling.connect(identity.getClientId(), role.directSave, role.hostUi);
+}
+
+async function detectHostConnectionRole(): Promise<HostConnectionRole> {
+  const remoteHealth = await fetchHealth(new URL('/api/health', location.origin).toString());
+  const remoteMode = normalizeServerMode(remoteHealth?.deploymentMode);
+  if (remoteMode !== 'docker') {
+    return { directSave: isLoopbackHost(location.hostname), hostUi: false, serverMode: remoteMode };
+  }
+
+  if (serviceHostUi.value || isLoopbackHost(location.hostname)) {
+    return { directSave: true, hostUi: true, serverMode: remoteMode };
+  }
+
+  const localHealth = await fetchHealth(`${location.protocol}//127.0.0.1:${location.port || '8080'}/api/health`, LOCAL_HEALTH_TIMEOUT_MS);
+  const sameDockerServer = Boolean(
+    localHealth?.ok &&
+    normalizeServerMode(localHealth.deploymentMode) === 'docker' &&
+    (!getHealthInstanceId(remoteHealth) || !getHealthInstanceId(localHealth) || getHealthInstanceId(remoteHealth) === getHealthInstanceId(localHealth))
+  );
+
+  if (sameDockerServer || await probeLocalDockerHostUi(remoteHealth)) {
+    return { directSave: true, hostUi: true, serverMode: remoteMode };
+  }
+
+  return { directSave: false, hostUi: false, serverMode: remoteMode };
+}
+
+async function fetchHealth(url: string, timeoutMs = LOCAL_HEALTH_TIMEOUT_MS): Promise<HealthResponse | null> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { cache: 'no-store', signal: controller.signal, mode: 'cors' });
+    if (!response.ok) return null;
+    return await response.json() as HealthResponse;
+  } catch (error) {
+    addLog('health probe failed', { url, error: errorMessage(error) }, 'warn');
+    return null;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+function getHealthInstanceId(health: HealthResponse | null | undefined) {
+  return health?.serverInstanceId || health?.instanceId || '';
+}
+
+function probeLocalDockerHostUi(remoteHealth: HealthResponse | null) {
+  return new Promise<boolean>(resolve => {
+    const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
+    const params = new URLSearchParams({
+      deviceId: identity.getClientId(),
+      directSave: '1',
+      hostUi: '1',
+      probe: '1'
+    });
+    const url = `${protocol}://127.0.0.1:${location.port || '8080'}/ws?${params.toString()}`;
+    let done = false;
+    const finish = (ok: boolean) => {
+      if (done) return;
+      done = true;
+      window.clearTimeout(timer);
+      try {
+        socket.close();
+      } catch {
+        // ignore probe close errors
+      }
+      resolve(ok);
+    };
+    const timer = window.setTimeout(() => finish(false), LOCAL_HEALTH_TIMEOUT_MS);
+    let socket: WebSocket;
+    try {
+      socket = new WebSocket(url);
+    } catch (error) {
+      addLog('local host websocket probe failed to start', { url, error: errorMessage(error) }, 'warn');
+      window.clearTimeout(timer);
+      resolve(false);
+      return;
+    }
+    socket.addEventListener('message', event => {
+      try {
+        const message = JSON.parse(event.data) as SignalingMessage & { serverInstanceId?: string };
+        const instanceId = message.serverInstanceId || getHealthInstanceId(message as unknown as HealthResponse);
+        const ok = message.type === 'hello' &&
+          normalizeServerMode(message.serverMode) === 'docker' &&
+          (!getHealthInstanceId(remoteHealth) || !instanceId || getHealthInstanceId(remoteHealth) === instanceId);
+        finish(ok);
+      } catch (error) {
+        addLog('local host websocket probe parse failed', { error: errorMessage(error) }, 'warn');
+        finish(false);
+      }
+    });
+    socket.addEventListener('error', () => finish(false));
+    socket.addEventListener('close', () => finish(done));
+  });
+}
+
+function findServiceHostBrowserDevice(hostIp: string) {
+  return dedupeDevices(discoveredDevices.value).find(device => {
+    if (isServiceHostEntry(device)) return false;
+    return isLikelyServiceHostBrowser(device, hostIp);
+  });
+}
+
+function isLocalServiceHostDevice(device: DeviceRecord) {
+  if (serverMode.value !== 'docker') return false;
+  return isLikelyServiceHostBrowser(device);
+}
+
+function dedupeDevices(list: DeviceRecord[]) {
+  const byKey = new Map<string, DeviceRecord>();
+  for (const device of list) {
+    const key = device.id || `${device.ip}|${device.userAgent || ''}`;
+    const current = byKey.get(key);
+    if (!current || device.lastSeen > current.lastSeen) byKey.set(key, device);
+  }
+  return [...byKey.values()].sort((a, b) => b.lastSeen - a.lastSeen);
+}
+
 async function handleAppMessage(message: SignalingMessage) {
   if (message.type === 'hello') {
+    serverMode.value = normalizeServerMode(message.serverMode);
     localIdentity.value = identity.applyServerIdentity(message.device, message.serverIps);
     await store.upsert(localIdentity.value);
     return;
   }
 
   if (message.type === 'device-list') {
-    devices.value = message.devices;
-    await store.upsertMany(message.devices);
+    discoveredDevices.value = message.devices;
+    const visibleDevices = dedupeDevices(message.devices.filter(device => !isLocalServiceHostDevice(device)));
+    devices.value = visibleDevices;
+    await store.upsertMany(visibleDevices);
     return;
   }
 
@@ -720,7 +890,7 @@ function handleRelayTransferError(transferId: string, fileName = 'Relay file', m
 }
 function withSpeedSample(item: TransferProgress): TransferProgress {
   const now = performance.now();
-  const previous = speedSamples.get(item.id);
+  const previousState = speedSamples.get(item.id);
   const current = progress.value.get(item.id);
   const startedAt = current?.startedAt || item.startedAt || now;
   const safeTotal = Math.max(item.totalBytes || 0, current?.totalBytes || 0);
@@ -728,26 +898,24 @@ function withSpeedSample(item: TransferProgress): TransferProgress {
     ? Math.max(item.bytesTransferred || 0, current?.bytesTransferred || 0)
     : Math.min(safeTotal || item.bytesTransferred || 0, Math.max(item.bytesTransferred || 0, current?.bytesTransferred || 0));
   const normalized = { ...item, bytesTransferred: safeBytes, totalBytes: safeTotal || item.totalBytes, startedAt, completedAt: item.done ? item.completedAt || now : item.completedAt };
-  const needsNewSample = !previous || previous.direction !== normalized.direction || previous.mode !== normalized.mode;
-  const baseSample = needsNewSample
-    ? { startedAt, lastAt: now, lastBytes: current?.bytesTransferred ?? 0, direction: normalized.direction, mode: normalized.mode }
-    : previous;
+  const needsNewSample = !previousState || previousState.direction !== normalized.direction || previousState.mode !== normalized.mode;
+  const state = needsNewSample
+    ? createSpeedSampleState(normalized, current, startedAt)
+    : previousState;
 
   if (needsNewSample) {
-    speedSamples.set(item.id, baseSample);
+    speedSamples.set(item.id, state);
     if (!normalized.done) return normalized;
   }
 
   if (normalized.done) {
-    const sample = speedSamples.get(item.id) || baseSample;
+    const sample = speedSamples.get(item.id) || state;
     const sampleStartedAt = sample.startedAt || startedAt;
     const completedAt = normalized.completedAt || now;
     const elapsedSeconds = Math.max((completedAt - sampleStartedAt) / 1000, 0.001);
-    const finalDeltaMs = Math.max(completedAt - sample.lastAt, 1);
-    const finalDeltaBytes = Math.max(normalized.bytesTransferred - sample.lastBytes, 0);
-    const finalInstantSpeed = (finalDeltaBytes / finalDeltaMs) * 1000;
-    const peak = Math.max(current?.peakBytesPerSecond || 0, current?.speedBytesPerSecond || 0, Number.isFinite(finalInstantSpeed) ? finalInstantSpeed : 0);
-    speedSamples.set(item.id, { ...sample, lastAt: completedAt, lastBytes: normalized.bytesTransferred });
+    appendSpeedSamplePoint(sample, completedAt, normalized.bytesTransferred);
+    const finalWindowSpeed = getWindowSpeed(sample, completedAt);
+    const peak = Math.max(current?.peakBytesPerSecond || 0, current?.speedBytesPerSecond || 0, finalWindowSpeed || 0);
     return {
       ...normalized,
       completedAt,
@@ -757,24 +925,95 @@ function withSpeedSample(item: TransferProgress): TransferProgress {
     };
   }
 
-  const sample = speedSamples.get(item.id) || baseSample;
-  const deltaMs = Math.max(now - sample.lastAt, 1);
-  const deltaBytes = Math.max(normalized.bytesTransferred - sample.lastBytes, 0);
+  const sample = speedSamples.get(item.id) || state;
+  appendSpeedSamplePoint(sample, now, normalized.bytesTransferred);
+  const windowSpeed = getWindowSpeed(sample, now);
+  const smoothedSpeed = smoothSpeed(current?.speedBytesPerSecond, windowSpeed);
   const elapsedSeconds = Math.max((now - sample.startedAt) / 1000, 0.001);
   const sampled = {
     ...normalized,
-    speedBytesPerSecond: smoothSpeed(current?.speedBytesPerSecond, (deltaBytes / deltaMs) * 1000),
+    speedBytesPerSecond: smoothedSpeed,
     averageBytesPerSecond: normalized.bytesTransferred / elapsedSeconds,
-    peakBytesPerSecond: Math.max(current?.peakBytesPerSecond || 0, current?.speedBytesPerSecond || 0, (deltaBytes / deltaMs) * 1000)
+    peakBytesPerSecond: Math.max(current?.peakBytesPerSecond || 0, current?.speedBytesPerSecond || 0, smoothedSpeed || 0)
   };
-  speedSamples.set(item.id, { ...sample, lastAt: now, lastBytes: normalized.bytesTransferred });
   return sampled;
 }
 
-function smoothSpeed(previousSpeed: number | undefined, instantSpeed: number) {
-  if (!Number.isFinite(instantSpeed)) return previousSpeed;
+function createSpeedSampleState(item: TransferProgress, current: TransferProgress | undefined, startedAt: number): SpeedSampleState {
+  const initialBytes = Math.min(item.bytesTransferred || 0, Math.max(current?.bytesTransferred || 0, 0));
+  return {
+    startedAt,
+    direction: item.direction,
+    mode: item.mode,
+    points: [{ at: startedAt, bytes: initialBytes }]
+  };
+}
+
+function appendSpeedSamplePoint(state: SpeedSampleState, at: number, bytes: number) {
+  const last = state.points[state.points.length - 1];
+  const safeBytes = Math.max(bytes, last?.bytes || 0);
+  if (!last) {
+    state.points.push({ at, bytes: safeBytes });
+  } else if (at - last.at < SPEED_SAMPLE_MIN_INTERVAL_MS) {
+    last.at = at;
+    last.bytes = safeBytes;
+  } else if (last.at === at) {
+    last.bytes = safeBytes;
+  } else {
+    state.points.push({ at, bytes: safeBytes });
+  }
+
+  const cutoff = at - SPEED_SAMPLE_WINDOW_MS;
+  while (state.points.length > 2 && state.points[1].at < cutoff) state.points.shift();
+}
+
+function getWindowSpeed(state: SpeedSampleState, now: number) {
+  if (state.points.length < 2) return undefined;
+  const latest = state.points[state.points.length - 1];
+  const cutoff = Math.max(state.points[0].at, now - SPEED_SAMPLE_WINDOW_MS);
+  const start = getWindowStartPoint(state.points, cutoff);
+  const elapsedMs = Math.max(latest.at - start.at, 1);
+  return Math.max(((latest.bytes - start.bytes) / elapsedMs) * 1000, 0);
+}
+
+function getWindowStartPoint(points: SpeedSamplePoint[], cutoff: number): SpeedSamplePoint {
+  for (let index = 1; index < points.length; index += 1) {
+    const previous = points[index - 1];
+    const next = points[index];
+    if (next.at < cutoff) continue;
+    if (next.at === previous.at) return next;
+    const ratio = Math.max(0, Math.min(1, (cutoff - previous.at) / (next.at - previous.at)));
+    return {
+      at: cutoff,
+      bytes: previous.bytes + (next.bytes - previous.bytes) * ratio
+    };
+  }
+  return points[0];
+}
+
+function smoothSpeed(previousSpeed: number | undefined, instantSpeed: number | undefined) {
+  if (typeof instantSpeed !== 'number' || !Number.isFinite(instantSpeed)) return previousSpeed;
   if (!previousSpeed || !Number.isFinite(previousSpeed)) return instantSpeed;
-  return previousSpeed * 0.72 + instantSpeed * 0.28;
+  const weight = instantSpeed >= previousSpeed ? 0.7 : 0.35;
+  return previousSpeed + (instantSpeed - previousSpeed) * weight;
+}
+
+function refreshActiveSpeedDisplays() {
+  let changed = false;
+  const nextProgress = new Map(progress.value);
+  for (const item of progress.value.values()) {
+    if (item.done || !speedSamples.has(item.id)) continue;
+    const sampled = withSpeedSample(item);
+    if (
+      sampled.speedBytesPerSecond !== item.speedBytesPerSecond ||
+      sampled.averageBytesPerSecond !== item.averageBytesPerSecond ||
+      sampled.peakBytesPerSecond !== item.peakBytesPerSecond
+    ) {
+      nextProgress.set(item.id, sampled);
+      changed = true;
+    }
+  }
+  if (changed) progress.value = nextProgress;
 }
 
 function maybeAutoDownload(item: TransferProgress): TransferProgress {
@@ -814,28 +1053,50 @@ function canDirectSaveTo(target: DeviceRecord) {
   return false;
 }
 
+function isServiceHostEntry(device: DeviceRecord) {
+  return device.id === SERVICE_HOST_DEVICE_ID;
+}
+
+function isLikelyServiceHostBrowser(device: DeviceRecord, hostIp?: string) {
+  if (isServiceHostEntry(device)) return false;
+  if (serverMode.value !== 'docker') return false;
+  if (device.hostUi) return true;
+  if (device.virtual) return false;
+  const serverIps = localIdentity.value?.serverIps ?? [];
+  const serviceHostIp = hostIp || (localIdentity.value ? getServiceHostIp(localIdentity.value) : location.hostname);
+  const hostCandidates = new Set([serviceHostIp, location.hostname, ...serverIps].filter(Boolean));
+  return Boolean(device.canDirectSave && (hostCandidates.has(device.ip) || hostCandidates.has(device.id)));
+}
+
+function deviceCardClass(device: DeviceRecord) {
+  return 'border-line hover:border-teal/40';
+}
+
+function displayDeviceName(device: DeviceRecord) {
+  if (isServiceHostEntry(device)) return device.ip;
+  return identity.getDisplayName(device);
+}
 
 function deviceReceiveModeLabel(device: DeviceRecord) {
   if (canDirectSaveTo(device)) return t.value.direct;
-  return t.value.browserDownload;
+  return t.value.browserDownloadMode;
+}
+
+function normalizeServerMode(value?: string): ServerMode {
+  return value === 'docker' ? 'docker' : 'node';
 }
 
 async function sendDirectToServer(target: DeviceRecord, file: File) {
   const duplicateId = findActiveSend(target.id, file, 'direct');
   if (duplicateId) {
-    updateStatus(duplicateId, t.value.waitConfirm);
+    updateStatus(duplicateId, t.value.savingDisk);
     addLog('duplicate direct send reused', { duplicateId, target: target.id, file: file.name, size: file.size }, 'warn');
-    if (pendingDirectAccepts.has(duplicateId)) {
-      signaling.send({ type: 'direct-transfer-request', to: target.id, fileMeta: createFileMeta(duplicateId, file) });
-      addLog('direct request resent', { transferId: duplicateId, to: target.id });
-    }
     return;
   }
   const id = createTransferId();
   trackActiveSend(target.id, file, 'direct', id);
   activePeers.set(id, target.id);
   addLog('direct send created', { transferId: id, target: target.id, file: file.name, size: file.size });
-  const fileMeta = createFileMeta(id, file);
   setProgress({
     id,
     direction: 'send',
@@ -846,17 +1107,11 @@ async function sendDirectToServer(target: DeviceRecord, file: File) {
     mode: 'direct',
     cancellable: true,
     peerId: target.id,
-    statusText: t.value.waitConfirm
+    statusText: t.value.savingDisk
   });
 
   try {
-    const accepted = waitForPending(pendingDirectAccepts, id);
-    signaling.send({ type: 'direct-transfer-request', to: target.id, fileMeta });
-    addLog('direct request sent', { transferId: id, to: target.id });
-    await accepted;
-    addLog('direct request accepted by peer', { transferId: id });
-    updateStatus(id, t.value.savingDisk);
-
+    addLog('direct upload starts without peer prompt', { transferId: id, target: target.id, file: file.name, size: file.size });
     const result = await uploadWithProgress(file, id, uploaded => updateUploaded(id, uploaded));
     setProgress(withSpeedSample({
       id,
@@ -873,7 +1128,6 @@ async function sendDirectToServer(target: DeviceRecord, file: File) {
   } catch (error) {
     markFailed(id, file, 'direct', error);
   } finally {
-    pendingDirectAccepts.delete(id);
     clearTransferBookkeeping(id);
     disableWakeLock();
   }
@@ -1595,7 +1849,7 @@ async function loadStorageDir() {
 }
 
 async function saveStorageDir() {
-  if (!isServiceHost.value && !directSaveReceiver.value) {
+  if (!isServiceHost.value) {
     storageMessage.value = t.value.saveStorageFailed;
     storageStatusOk.value = false;
     return;
@@ -1626,6 +1880,10 @@ function handleVisibility() {
 function cleanup() {
   document.removeEventListener('visibilitychange', handleVisibility);
   window.removeEventListener('beforeunload', cleanup);
+  if (speedDisplayTimer !== null) {
+    window.clearInterval(speedDisplayTimer);
+    speedDisplayTimer = null;
+  }
   for (const pending of pendingDirectAccepts.values()) window.clearTimeout(pending.timer);
   pendingDirectAccepts.clear();
   for (const pending of pendingRelayAccepts.values()) window.clearTimeout(pending.timer);
@@ -1690,3 +1948,6 @@ function createTransferId() {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 </script>
+
+
+

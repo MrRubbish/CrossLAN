@@ -10,6 +10,7 @@ RUN npm run build
 FROM node:20-alpine
 WORKDIR /app
 ENV NODE_ENV=production
+ENV CROSSLAN_DEPLOYMENT=docker
 COPY package*.json ./
 COPY server/package*.json server/
 RUN npm install --omit=dev --workspace server

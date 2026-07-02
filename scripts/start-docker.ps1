@@ -1,6 +1,6 @@
 param(
   [int]$Port = 8080,
-  [int]$RelayBufferMb = 128
+  [int]$RelayBufferMb = 256
 )
 
 $ErrorActionPreference = 'Stop'

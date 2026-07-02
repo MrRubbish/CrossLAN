@@ -2,6 +2,7 @@ import express from 'express';
 import http, { createServer } from 'node:http';
 import https from 'node:https';
 import { once } from 'node:events';
+import { randomUUID } from 'node:crypto';
 import { constants, createWriteStream } from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -20,6 +21,8 @@ const httpsPort = Number(process.env.HTTPS_PORT || 8443);
 const httpsKeyPath = process.env.CROSSLAN_HTTPS_KEY || '';
 const httpsCertPath = process.env.CROSSLAN_HTTPS_CERT || '';
 const shouldRedirectHttp = process.env.CROSSLAN_HTTP_REDIRECT === '1' || process.env.CROSSLAN_HTTP_REDIRECT === 'true';
+const deploymentMode = normalizeDeploymentMode(process.env.CROSSLAN_DEPLOYMENT || process.env.CROSSLAN_SERVER_MODE || 'node');
+const serverInstanceId = randomUUID();
 const defaultSaveDir = process.env.CROSSLAN_SAVE_DIR || path.join(os.homedir(), 'Downloads', 'CrossLAN');
 const configPath = process.env.CROSSLAN_CONFIG || path.join(os.homedir(), '.crosslan.json');
 const storageSettings = { saveDir: defaultSaveDir };
@@ -27,7 +30,7 @@ const DIRECT_UPLOAD_LOG_INTERVAL_MS = 30000;
 const RELAY_UPLOAD_LOG_INTERVAL_MS = 5000;
 const DIRECT_UPLOAD_WRITE_BUFFER = 8 * 1024 * 1024;
 const RELAY_SESSION_TTL_MS = Number(process.env.CROSSLAN_RELAY_SESSION_TTL_MS || 5 * 60 * 1000);
-const RELAY_BUFFER_BYTES = Math.max(Number(process.env.CROSSLAN_RELAY_BUFFER_MB || 128), 1) * 1024 * 1024;
+const RELAY_BUFFER_BYTES = Math.max(Number(process.env.CROSSLAN_RELAY_BUFFER_MB || 256), 1) * 1024 * 1024;
 const app = express();
 const server = createServer(app);
 let activeServer = server;
@@ -48,9 +51,22 @@ app.use((req, res, next) => {
 });
 app.use(express.json({ limit: '32kb' }));
 
-app.get('/api/health', (req, res) => {
-  res.json({ ok: true, name: 'CrossLAN', now: Date.now() });
+app.options('/api/health', (req, res) => {
+  setHealthCors(res);
+  res.sendStatus(204);
 });
+
+app.get('/api/health', (req, res) => {
+  setHealthCors(res);
+  res.json({ ok: true, name: 'CrossLAN', deploymentMode, instanceId: serverInstanceId, now: Date.now() });
+});
+
+function setHealthCors(res) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'content-type');
+  res.setHeader('Access-Control-Allow-Private-Network', 'true');
+}
 
 app.get('/api/storage', async (req, res) => {
   try {
@@ -471,7 +487,7 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(clientDist, 'index.html'));
 });
 
-const hub = new SignalingHub({ wss, mdns, networkProber });
+const hub = new SignalingHub({ wss, mdns, networkProber, deploymentMode, serverInstanceId });
 server.on('upgrade', handleUpgrade);
 
 try {
@@ -705,6 +721,10 @@ function sanitizePathSegment(value) {
 
 function normalizeIp(value) {
   return String(value || '').replace(/^::ffff:/, '');
+}
+
+function normalizeDeploymentMode(value) {
+  return String(value || '').toLowerCase() === 'docker' ? 'docker' : 'node';
 }
 
 function getErrorCode(error) {

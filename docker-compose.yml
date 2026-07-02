@@ -5,11 +5,12 @@ services:
       - "${PORT:-8080}:8080"
     environment:
       NODE_ENV: production
+      CROSSLAN_DEPLOYMENT: docker
       PORT: 8080
       MDNS_SERVICE_NAME: CrossLAN
       CROSSLAN_SAVE_DIR: /data/CrossLAN
       CROSSLAN_CONFIG: /config/crosslan.json
-      CROSSLAN_RELAY_BUFFER_MB: ${CROSSLAN_RELAY_BUFFER_MB:-128}
+      CROSSLAN_RELAY_BUFFER_MB: ${CROSSLAN_RELAY_BUFFER_MB:-256}
     volumes:
       - ${USERPROFILE}/Downloads/CrossLAN:/data/CrossLAN
       - ./docker-config:/config

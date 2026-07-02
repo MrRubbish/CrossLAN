@@ -1,7 +1,7 @@
 param(
   [int]$Port = 8080,
   [string]$SaveDir = "$env:USERPROFILE\Downloads\CrossLAN",
-  [int]$RelayBufferMb = 128
+  [int]$RelayBufferMb = 256
 )
 
 $ErrorActionPreference = 'Stop'

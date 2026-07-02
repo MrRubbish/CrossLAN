@@ -7,9 +7,10 @@ CrossLAN is a lightweight LAN file transfer PWA for phones and PCs on the same n
 - LAN device discovery through the local signaling server and mDNS hooks.
 - Small-file peer-to-peer transfer with WebRTC DataChannel backpressure.
 - Batch file selection: small files are packed into uncompressed ZIP batches; large files are sent one by one in selection order.
-- Large-file direct save to PC disk when the receiver is a desktop/server device.
-- Large-file browser-download relay for phone receivers, streamed through server memory instead of a temporary relay file.
+- Large-file direct save to disk when the receiver is the CrossLAN service host.
+- Large-file browser-download relay for phone/browser receivers, streamed through server memory instead of a temporary relay file.
 - Cancellable large-file transfers: cancelling aborts the active HTTP upload and notifies the peer.
+- Transfer task cleanup and upload speed limiting. The manual speed limit is in `Mbps` and defaults to unlimited.
 - System-language UI: Chinese browsers show Chinese, other languages show English.
 - System dark mode support through `prefers-color-scheme`.
 - Optional HTTPS server and optional HTTP to HTTPS redirect for deployments with a trusted certificate.
@@ -37,13 +38,15 @@ On Windows you can use the helper script:
 Optional parameters:
 
 ```powershell
-.\scripts\start-local.ps1 -Port 8080 -SaveDir "$env:USERPROFILE\Downloads\CrossLAN" -RelayBufferMb 128
+.\scripts\start-local.ps1 -Port 8080 -SaveDir "$env:USERPROFILE\Downloads\CrossLAN" -RelayBufferMb 256
 ```
+
+In local Node deployment, device cards are real browser clients. The browser running on the service host can receive files as a normal device, and large files sent to the service host direct-save card are written to the configured save directory.
 
 ## Docker
 
 ```bash
-docker compose up --build
+docker compose up -d --build
 ```
 
 On Windows PowerShell:
@@ -57,10 +60,29 @@ The compose file maps the PC save directory to `~/Downloads/CrossLAN` on Windows
 Optional Docker script parameters:
 
 ```powershell
-.\scripts\start-docker.ps1 -Port 8080 -RelayBufferMb 128
+.\scripts\start-docker.ps1 -Port 8080 -RelayBufferMb 256
 ```
 
 If Docker cannot pull `node:20-alpine`, configure Docker Desktop registry/proxy or build after the network can reach Docker Hub. The app code itself does not require Docker to run; local `npm run build && npm start` is fine.
+
+After frontend or server code changes, rebuild the image:
+
+```bash
+docker compose up -d --build
+```
+
+Docker deployment sets `CROSSLAN_DEPLOYMENT=docker`. In this mode, CrossLAN advertises the Docker service host as one direct-save device card and hides the host browser UI from other devices, so sending to the service host avoids browser/IDM download interception and writes into the mapped save directory. If an old browser-download host card still appears after an update, close old tabs or force refresh the page. On the host PC you can also open:
+
+```text
+http://<host-LAN-IP>:8080/?serviceHost=1
+```
+
+## Device Cards
+
+- Local Node mode: cards represent real browser clients.
+- Docker mode: the service host is shown as a virtual direct-save card; the host browser tab is treated as a control UI and should not be advertised as a browser-download receiver.
+- Other phones and PCs still appear as normal browser receivers.
+- A `Direct save` card means large files are streamed to the service host save directory. A `Browser receive` card means large files are handed to that receiver's browser download manager.
 
 ## HTTPS And Redirects
 
@@ -98,17 +120,22 @@ volumes:
 
 ## File Saving Model
 
-- Phone to PC large files: the browser uploads to `/api/transfers/direct`; the server streams the request directly to the configured PC save directory.
-- PC to phone large files: the phone opens `/api/transfers/relay/:transferId/:fileName` as a browser download, while the sender uploads to `/api/transfers/relay/:transferId`; the server pipes both sides through a bounded memory stream.
-- Small files: WebRTC DataChannel transfers chunks in memory and hands the completed file to the browser download flow.
-- Multiple selected small files are packed into uncompressed `.zip` batches so the receiver confirms once per small batch. Files larger than 8 MB, or batches beyond 64 MB total, are sent sequentially as original files instead of being packed.
+- Service-host large files: the sender uploads to `/api/transfers/direct`; the server streams the request directly to the configured save directory.
+- Phone/browser large files: the receiver opens `/api/transfers/relay/:transferId/:fileName` as a browser download, while the sender uploads to `/api/transfers/relay/:transferId`; the server pipes both sides through a bounded memory stream.
+- Small files under `8 MB`: WebRTC DataChannel transfers chunks in memory and hands the completed file to the browser download flow.
+- Multiple selected small files are packed into uncompressed `.zip` batches so the receiver confirms once per small batch. Files larger than `8 MB`, or batches beyond `64 MB` total, are sent sequentially as original files instead of being packed. CrossLAN does not auto-unzip the batch on the receiver.
 
 The large-file HTTP paths stream data and do not intentionally buffer the whole file in frontend memory.
-For PC-to-phone browser downloads, the sender's upload speed is naturally back-pressured by the phone download speed. The relay memory buffer defaults to `128` MB and can be tuned with `CROSSLAN_RELAY_BUFFER_MB`; a larger buffer absorbs short Wi-Fi stalls, but can also make upload progress look more bursty because the PC fills the buffer and then waits for the phone/browser download path.
+For PC-to-phone browser downloads, the sender's upload speed is naturally back-pressured by the phone download speed. The relay memory buffer defaults to `256` MB and can be tuned with `CROSSLAN_RELAY_BUFFER_MB`; a larger buffer absorbs short Wi-Fi stalls, but can also make upload progress look more bursty because the PC fills the buffer and then waits for the phone/browser download path.
+The old relay temporary disk cache path is not used for large browser-download relay transfers.
+
+Small batch ZIP packaging is done in the sender browser before transfer. It is intentionally limited to small batches because the generated `.zip` exists as a browser-side file before being sent.
 
 ## PC Save Directory
 
-The PC save path can be changed in the Storage panel. By default it is:
+The service-host save path can be changed in the Storage panel. This setting applies only to files sent to the CrossLAN service host direct-save card. It does not change another browser's normal Downloads folder.
+
+By default it is:
 
 ```text
 %USERPROFILE%\Downloads\CrossLAN
@@ -118,6 +145,27 @@ For Docker the default container path is:
 
 ```text
 /data/CrossLAN
+```
+
+The default Docker compose maps this to:
+
+```text
+%USERPROFILE%\Downloads\CrossLAN
+```
+
+## Speed Limit
+
+The Network panel can limit upload speed from the current browser. The unit is `Mbps`; manual mode starts at `100 Mbps`, and the default mode is unlimited.
+
+The limit is applied at the sender upload path. Browser-download receive speed is still affected by the receiver browser, phone storage, Wi-Fi quality, and router performance.
+
+## Updating The App
+
+The app unregisters stale Service Workers and clears old caches on startup, but browsers can still keep an old tab alive. After rebuilding or updating:
+
+```text
+PC: Ctrl+F5
+Phone: close the tab, reopen CrossLAN, or use the browser refresh menu
 ```
 
 ## Release Checks

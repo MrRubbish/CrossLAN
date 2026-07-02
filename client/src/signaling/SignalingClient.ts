@@ -12,16 +12,19 @@ export class SignalingClient {
   private outboundQueue: Record<string, unknown>[] = [];
   private socketDeviceId = '';
   private socketDirectSave = false;
+  private socketHostUi = false;
   private closingManually = false;
 
-  connect(deviceId = '', directSave = false) {
+  connect(deviceId = '', directSave = false, hostUi = false) {
     this.socketDeviceId = deviceId || this.socketDeviceId;
     this.socketDirectSave = directSave;
+    this.socketHostUi = hostUi;
     this.closingManually = false;
     const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
     const params = new URLSearchParams();
     if (this.socketDeviceId) params.set('deviceId', this.socketDeviceId);
     if (this.socketDirectSave) params.set('directSave', '1');
+    if (this.socketHostUi) params.set('hostUi', '1');
     const query = params.toString() ? `?${params.toString()}` : '';
     const url = `${protocol}://${location.host}/ws${query}`;
     this.emitDebug('ws connecting', { url, readyState: this.socket?.readyState });
@@ -85,14 +88,14 @@ export class SignalingClient {
     this.socket?.close();
   }
 
-  reconnect(deviceId = this.socketDeviceId, directSave = this.socketDirectSave) {
+  reconnect(deviceId = this.socketDeviceId, directSave = this.socketDirectSave, hostUi = this.socketHostUi) {
     if (this.reconnectTimer) {
       window.clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
     this.closingManually = true;
     this.socket?.close();
-    this.connect(deviceId, directSave);
+    this.connect(deviceId, directSave, hostUi);
   }
 
   private scheduleReconnect() {
@@ -100,7 +103,7 @@ export class SignalingClient {
     this.emitDebug('ws reconnect scheduled');
     this.reconnectTimer = window.setTimeout(() => {
       this.reconnectTimer = null;
-      this.connect(this.socketDeviceId, this.socketDirectSave);
+      this.connect(this.socketDeviceId, this.socketDirectSave, this.socketHostUi);
     }, 1500);
   }
 

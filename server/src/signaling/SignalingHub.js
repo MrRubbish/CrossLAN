@@ -8,11 +8,14 @@ const RECEIVER_FOLLOWUP_TYPES = new Set(['relay-transfer-progress', 'relay-trans
 const ROUTE_TTL_MS = 30 * 60 * 1000;
 
 export class SignalingHub {
-  constructor({ wss, mdns, networkProber }) {
+  constructor({ wss, mdns, networkProber, deploymentMode = 'node', serverInstanceId = '' }) {
     this.wss = wss;
     this.mdns = mdns;
     this.networkProber = networkProber;
+    this.deploymentMode = deploymentMode;
+    this.serverInstanceId = serverInstanceId;
     this.clients = new Map();
+    this.hostUiDeviceIds = new Set();
     this.transferRoutes = new Map();
     this.refreshTimer = null;
 
@@ -28,6 +31,32 @@ export class SignalingHub {
     const clientDeviceId = getClientDeviceId(request);
     const id = clientDeviceId || ip || `unknown-${nanoid(6)}`;
     const connectionId = `${id}-${nanoid(8)}`;
+    if (isProbeClient(request)) {
+      const hostUi = this.deploymentMode === 'docker' && isHostUiClient(request);
+      if (hostUi) this.markHostUiDeviceId(id);
+      console.log('CrossLAN ws probe: id=' + id + ' ip=' + ip + ' hostUi=' + (hostUi ? '1' : '0') + ' ua=' + (request.headers['user-agent'] || 'Unknown device'));
+      this.send(socket, {
+        type: 'hello',
+        device: publicDevice({
+          connectionId,
+          id,
+          ip,
+          socket,
+          userAgent: request.headers['user-agent'] || 'Unknown device',
+          canDirectSave: false,
+          hostUi,
+          lastSeen: Date.now()
+        }),
+        serverIps: getLocalIpv4Addresses(),
+        serverMode: this.deploymentMode,
+        serverInstanceId: this.serverInstanceId
+      });
+      socket.close(1000, 'probe complete');
+      return;
+    }
+
+    const hostUi = this.deploymentMode === 'docker' && (isHostUiClient(request) || this.hostUiDeviceIds.has(id));
+    if (hostUi) this.hostUiDeviceIds.add(id);
     const client = {
       connectionId,
       id,
@@ -35,17 +64,20 @@ export class SignalingHub {
       socket,
       userAgent: request.headers['user-agent'] || 'Unknown device',
       canDirectSave: isDirectSaveClient(request) || isServiceHostRequest(request, ip),
+      hostUi,
       lastSeen: Date.now(),
       connectedAt: Date.now()
     };
 
     this.clients.set(connectionId, client);
-    console.log('CrossLAN ws connected: id=' + id + ' conn=' + connectionId + ' ip=' + ip + ' ua=' + client.userAgent);
+    console.log('CrossLAN ws connected: id=' + id + ' conn=' + connectionId + ' ip=' + ip + ' hostUi=' + (client.hostUi ? '1' : '0') + ' ua=' + client.userAgent);
 
     this.send(socket, {
       type: 'hello',
       device: publicDevice(client),
-      serverIps: getLocalIpv4Addresses()
+      serverIps: getLocalIpv4Addresses(),
+      serverMode: this.deploymentMode,
+      serverInstanceId: this.serverInstanceId
     });
     this.broadcastDeviceList();
 
@@ -177,6 +209,7 @@ export class SignalingHub {
     const devicesById = new Map();
     for (const client of this.clients.values()) {
       if (client.id === selfId || !isOpenClient(client)) continue;
+      if (client.hostUi) continue;
       const current = devicesById.get(client.id);
       if (!current || client.lastSeen > current.lastSeen) {
         devicesById.set(client.id, publicDevice(client));
@@ -212,6 +245,19 @@ export class SignalingHub {
     }
   }
 
+  markHostUiDeviceId(id) {
+    if (this.deploymentMode !== 'docker') return;
+    if (!id) return;
+    this.hostUiDeviceIds.add(id);
+    let changed = false;
+    for (const client of this.clients.values()) {
+      if (client.id !== id || client.hostUi) continue;
+      client.hostUi = true;
+      changed = true;
+    }
+    if (changed) this.broadcastDeviceList();
+  }
+
   close() {
     if (this.refreshTimer) {
       clearInterval(this.refreshTimer);
@@ -236,6 +282,7 @@ function publicDevice(client) {
     ip: client.ip,
     userAgent: client.userAgent,
     canDirectSave: client.canDirectSave,
+    hostUi: client.hostUi,
     lastSeen: client.lastSeen
   };
 }
@@ -273,9 +320,29 @@ function isDirectSaveClient(request) {
   }
 }
 
+function isHostUiClient(request) {
+  try {
+    const url = new URL(request.url || '/', 'http://crosslan.local');
+    return url.searchParams.get('hostUi') === '1';
+  } catch {
+    return false;
+  }
+}
+
+function isProbeClient(request) {
+  try {
+    const url = new URL(request.url || '/', 'http://crosslan.local');
+    return url.searchParams.get('probe') === '1';
+  } catch {
+    return false;
+  }
+}
+
 function isServiceHostRequest(request, ip) {
   const host = String(request.headers.host || '').split(':')[0].toLowerCase();
-  return host === 'localhost' || host === '127.0.0.1' || host === '::1' || ip === '127.0.0.1' || ip === '::1';
+  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return true;
+  if (ip === '127.0.0.1' || ip === '::1') return true;
+  return getLocalIpv4Addresses().includes(ip);
 }
 
 function getLocalIpv4Addresses() {

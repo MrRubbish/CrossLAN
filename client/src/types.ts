@@ -5,12 +5,16 @@ export interface DeviceRecord {
   alias?: string | null;
   userAgent?: string | null;
   canDirectSave?: boolean;
+  hostUi?: boolean;
+  virtual?: boolean;
   lastSeen: number;
 }
 
 export interface LocalIdentity extends DeviceRecord {
   serverIps: string[];
 }
+
+export type ServerMode = 'node' | 'docker';
 
 export type BandwidthMode = 'unlimited' | 'manual';
 
@@ -42,7 +46,7 @@ export interface TransferProgress {
 }
 
 export type SignalingMessage =
-  | { type: 'hello'; device: DeviceRecord; serverIps: string[] }
+  | { type: 'hello'; device: DeviceRecord; serverIps: string[]; serverMode?: ServerMode }
   | { type: 'device-list'; devices: DeviceRecord[]; mdnsPeers?: DeviceRecord[] }
   | { type: 'offer'; from: string; to?: string; description: RTCSessionDescriptionInit; fileMeta?: FileMeta }
   | { type: 'answer'; from: string; to?: string; description: RTCSessionDescriptionInit }
