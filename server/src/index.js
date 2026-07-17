@@ -31,6 +31,7 @@ const RELAY_UPLOAD_LOG_INTERVAL_MS = 5000;
 const DIRECT_UPLOAD_WRITE_BUFFER = 8 * 1024 * 1024;
 const RELAY_SESSION_TTL_MS = Number(process.env.CROSSLAN_RELAY_SESSION_TTL_MS || 5 * 60 * 1000);
 const RELAY_BUFFER_BYTES = Math.max(Number(process.env.CROSSLAN_RELAY_BUFFER_MB || 256), 1) * 1024 * 1024;
+const RELAY_CANCEL_TOMBSTONE_TTL_MS = Number(process.env.CROSSLAN_RELAY_CANCEL_TOMBSTONE_TTL_MS || 30 * 60 * 1000);
 const app = express();
 const server = createServer(app);
 let activeServer = server;
@@ -38,6 +39,8 @@ let redirectServer = null;
 const wss = new WebSocketServer({ noServer: true });
 const networkProber = new NetworkProber();
 const relaySessions = new Map();
+const cancelledRelayTransfers = new Map();
+const directUploads = new Map();
 const directChunkSessions = new Map();
 const mdns = new MdnsDiscovery({
   port,
@@ -106,17 +109,34 @@ app.post('/api/transfers/direct', async (req, res) => {
   let lastBroadcastAt = 0;
   const startedAt = Date.now();
   let lastLoggedBytes = 0;
+  let uploadSession = null;
 
   try {
     await ensureWritableDirectory(storageSettings.saveDir);
     const fileName = sanitizeFileName(decodeFileName(String(req.header('x-crosslan-file-name') || req.query.name || 'download.bin')));
     const expectedSize = Number(req.header('x-crosslan-file-size') || req.query.size || 0);
-    transferId = String(req.header('x-crosslan-transfer-id') || req.query.transferId || '');
+    transferId = sanitizePathSegment(String(req.header('x-crosslan-transfer-id') || req.query.transferId || ''));
+    if (transferId && directUploads.has(transferId)) {
+      res.status(409).json({ ok: false, message: 'Direct upload already started.' });
+      return;
+    }
     targetPath = await getAvailablePath(storageSettings.saveDir, fileName);
+    uploadSession = {
+      transferId,
+      fileName,
+      expectedSize,
+      targetPath,
+      request: req,
+      bytesWritten: 0,
+      cancelled: false,
+      cancelNotified: false
+    };
+    if (transferId) directUploads.set(transferId, uploadSession);
     console.log('CrossLAN direct upload started: ' + fileName + ' -> ' + targetPath + ' (' + formatBytes(expectedSize) + ')');
 
     req.on('data', chunk => {
       bytesWritten += chunk.length;
+      if (uploadSession) uploadSession.bytesWritten = bytesWritten;
       const now = Date.now();
       if (now - lastLogAt > DIRECT_UPLOAD_LOG_INTERVAL_MS) {
         const intervalBytes = bytesWritten - lastLoggedBytes;
@@ -144,10 +164,17 @@ app.post('/api/transfers/direct', async (req, res) => {
     broadcastDirectProgress({ type: 'direct-transfer-complete', transferId, fileName: path.basename(targetPath), bytesTransferred: bytesWritten, totalBytes: expectedSize || bytesWritten, path: targetPath });
     res.json({ ok: true, fileName: path.basename(targetPath), path: targetPath, bytesWritten });
   } catch (error) {
-    console.error('CrossLAN direct upload failed: ' + (error instanceof Error ? error.message : error));
-    broadcastDirectProgress({ type: 'direct-transfer-error', transferId, fileName: targetPath ? path.basename(targetPath) : undefined, message: error instanceof Error ? error.message : 'Upload failed.' });
+    const cancelled = Boolean(uploadSession?.cancelled);
+    const message = cancelled ? 'Transfer cancelled.' : error instanceof Error ? error.message : 'Upload failed.';
+    const log = cancelled ? console.warn : console.error;
+    log('CrossLAN direct upload ' + (cancelled ? 'cancelled: ' : 'failed: ') + message);
+    if (!uploadSession?.cancelNotified) {
+      broadcastDirectProgress({ type: 'direct-transfer-error', transferId, fileName: targetPath ? path.basename(targetPath) : undefined, message, cancelled });
+    }
     if (targetPath) await fs.rm(targetPath, { force: true }).catch(() => {});
-    res.status(500).json({ ok: false, message: error instanceof Error ? error.message : 'Upload failed.' });
+    if (!res.headersSent && !res.destroyed) res.status(cancelled ? 409 : 500).json({ ok: false, message, cancelled });
+  } finally {
+    if (transferId && directUploads.get(transferId) === uploadSession) directUploads.delete(transferId);
   }
 });
 
@@ -179,7 +206,10 @@ app.post('/api/transfers/direct/:transferId/chunk', async (req, res) => {
         targetPath,
         bytesWritten: 0,
         stream: createWriteStream(targetPath, { flags: 'wx', highWaterMark: DIRECT_UPLOAD_WRITE_BUFFER }),
-        startedAt: Date.now()
+        startedAt: Date.now(),
+        request: null,
+        cancelled: false,
+        cancelNotified: false
       };
       session.stream.on('error', error => {
         session.error = error;
@@ -193,6 +223,7 @@ app.post('/api/transfers/direct/:transferId/chunk', async (req, res) => {
       return;
     }
 
+    session.request = req;
     let chunkBytes = 0;
     req.on('data', chunk => {
       chunkBytes += chunk.length;
@@ -201,6 +232,7 @@ app.post('/api/transfers/direct/:transferId/chunk', async (req, res) => {
     });
 
     await writeRequestToStream(req, session.stream);
+    if (session.request === req) session.request = null;
     if (session.error) throw session.error;
 
     if (isFinal) {
@@ -222,21 +254,28 @@ app.post('/api/transfers/direct/:transferId/chunk', async (req, res) => {
 
     res.json({ ok: true, fileName: session.fileName, path: session.targetPath, bytesWritten: session.bytesWritten, chunkBytes });
   } catch (error) {
-    console.error('CrossLAN direct chunk upload failed: transferId=' + transferId + ' ' + (error instanceof Error ? error.message : error));
+    if (session?.request === req) session.request = null;
+    const cancelled = Boolean(session?.cancelled);
+    const message = cancelled ? 'Transfer cancelled.' : error instanceof Error ? error.message : 'Upload failed.';
+    const log = cancelled ? console.warn : console.error;
+    log('CrossLAN direct chunk upload ' + (cancelled ? 'cancelled: ' : 'failed: ') + 'transferId=' + transferId + ' ' + message);
     if (session) {
       session.stream.destroy();
       await fs.rm(session.targetPath, { force: true }).catch(() => {});
       directChunkSessions.delete(transferId);
     }
-    broadcastDirectProgress({ type: 'direct-transfer-error', transferId, fileName, message: error instanceof Error ? error.message : 'Upload failed.' });
-    if (!res.headersSent) res.status(500).json({ ok: false, message: error instanceof Error ? error.message : 'Upload failed.' });
+    if (!session?.cancelNotified) {
+      broadcastDirectProgress({ type: 'direct-transfer-error', transferId, fileName, message, cancelled });
+    }
+    if (!res.headersSent && !res.destroyed) res.status(cancelled ? 409 : 500).json({ ok: false, message, cancelled });
   }
 });
 
 app.delete('/api/transfers/direct/:transferId', async (req, res) => {
   const transferId = sanitizePathSegment(req.params.transferId);
-  const cleaned = await cleanupDirectChunkSession(transferId, 'cancelled');
-  res.json({ ok: true, cleaned });
+  const uploadCleaned = cleanupDirectUploadSession(transferId, 'cancelled');
+  const chunkCleaned = await cleanupDirectChunkSession(transferId, 'cancelled');
+  res.json({ ok: true, cleaned: uploadCleaned || chunkCleaned });
 });
 
 app.post('/api/transfers/relay/:transferId', async (req, res) => {
@@ -252,6 +291,7 @@ app.post('/api/transfers/relay/:transferId', async (req, res) => {
     res.status(400).json({ ok: false, message: 'transferId is required.' });
     return;
   }
+  if (rejectCancelledRelayTransfer(transferId, res)) return;
 
   const session = getOrCreateRelaySession(transferId, fileName, expectedSize);
   if (session.uploadStarted) {
@@ -260,6 +300,7 @@ app.post('/api/transfers/relay/:transferId', async (req, res) => {
   }
 
   session.uploadStarted = true;
+  session.uploadRequest = req;
   session.fileName = fileName;
   session.expectedSize = expectedSize;
   clearRelaySessionTimer(session);
@@ -303,7 +344,9 @@ app.post('/api/transfers/relay/:transferId', async (req, res) => {
   } catch (error) {
     if (!session.failed) failRelaySession(transferId, error instanceof Error ? error.message : 'Relay stream upload failed.');
     console.error('CrossLAN relay stream upload failed: transferId=' + transferId + ' file=' + fileName + ' ' + (error instanceof Error ? error.message : error));
-    if (!res.headersSent) res.status(500).json({ ok: false, message: error instanceof Error ? error.message : 'Relay stream upload failed.' });
+    if (!res.headersSent && !res.destroyed) res.status(500).json({ ok: false, message: error instanceof Error ? error.message : 'Relay stream upload failed.' });
+  } finally {
+    if (session.uploadRequest === req) session.uploadRequest = null;
   }
 });
 
@@ -318,6 +361,7 @@ app.post('/api/transfers/relay/:transferId/chunk', async (req, res) => {
     res.status(400).json({ ok: false, message: 'transferId is required.' });
     return;
   }
+  if (rejectCancelledRelayTransfer(transferId, res)) return;
 
   const session = getOrCreateRelaySession(transferId, fileName, expectedSize);
   try {
@@ -345,6 +389,7 @@ app.post('/api/transfers/relay/:transferId/chunk', async (req, res) => {
       session.bytesUploaded += chunk.length;
     });
 
+    session.uploadRequest = req;
     await writeRequestToStream(req, session.stream);
     if (session.failed) throw new Error('Relay session failed.');
 
@@ -367,21 +412,28 @@ app.post('/api/transfers/relay/:transferId/chunk', async (req, res) => {
   } catch (error) {
     if (!session.failed) failRelaySession(transferId, error instanceof Error ? error.message : 'Relay chunk upload failed.');
     console.error('CrossLAN relay chunk upload failed: transferId=' + transferId + ' file=' + fileName + ' ' + (error instanceof Error ? error.message : error));
-    if (!res.headersSent) res.status(500).json({ ok: false, message: error instanceof Error ? error.message : 'Relay chunk upload failed.' });
+    if (!res.headersSent && !res.destroyed) res.status(500).json({ ok: false, message: error instanceof Error ? error.message : 'Relay chunk upload failed.' });
+  } finally {
+    if (session.uploadRequest === req) session.uploadRequest = null;
   }
 });
 
 app.delete('/api/transfers/relay/:transferId', (req, res) => {
   const transferId = sanitizePathSegment(req.params.transferId);
   const session = relaySessions.get(transferId);
+  markRelayTransferCancelled(transferId);
   if (session) {
-    failRelaySession(transferId, 'Transfer cancelled.');
+    failRelaySession(transferId, 'Transfer cancelled.', true);
   }
   res.json({ ok: true, cleaned: Boolean(session) });
 });
 
 app.get('/api/transfers/relay/:transferId/state', (req, res) => {
   const transferId = sanitizePathSegment(req.params.transferId);
+  if (rejectCancelledRelayTransfer(transferId, res, {
+    bufferBytes: RELAY_BUFFER_BYTES,
+    bufferedBytes: 0
+  })) return;
   const session = relaySessions.get(transferId);
   if (!session) {
     res.status(404).json({ ok: false, message: 'Relay session not found.', bufferBytes: RELAY_BUFFER_BYTES, bufferedBytes: 0 });
@@ -409,6 +461,7 @@ app.get('/api/transfers/relay/:transferId/:fileName', async (req, res) => {
   const transferId = sanitizePathSegment(req.params.transferId);
   const fileName = sanitizeFileName(req.params.fileName);
   const expectedSize = Number(req.query.size || 0);
+  if (rejectCancelledRelayTransfer(transferId, res)) return;
   const session = getOrCreateRelaySession(transferId, fileName, expectedSize);
 
   if (session.downloadStarted) {
@@ -417,6 +470,8 @@ app.get('/api/transfers/relay/:transferId/:fileName', async (req, res) => {
   }
 
   session.downloadStarted = true;
+  session.downloadRequest = req;
+  session.downloadResponse = res;
   session.fileName = fileName;
   if (expectedSize > 0) session.expectedSize = expectedSize;
   clearRelaySessionTimer(session);
@@ -442,7 +497,10 @@ app.get('/api/transfers/relay/:transferId/:fileName', async (req, res) => {
     }
   });
   res.on('close', () => {
+    if (session.downloadRequest === req) session.downloadRequest = null;
+    if (session.downloadResponse === res) session.downloadResponse = null;
     console.log('CrossLAN relay stream download closed: transferId=' + transferId + ' file=' + fileName + ' downloaded=' + formatBytes(bytesDownloaded) + ' status=' + res.statusCode);
+    if (session.failed) return;
     if (!session.uploadComplete && bytesDownloaded < session.expectedSize) {
       failRelaySession(transferId, 'Receiver closed download.');
     } else {
@@ -600,17 +658,23 @@ function getOrCreateRelaySession(transferId, fileName, expectedSize) {
   let session = relaySessions.get(transferId);
   if (session) return session;
 
+  const stream = new PassThrough({ highWaterMark: RELAY_BUFFER_BYTES });
+  stream.on('error', () => {});
   session = {
     transferId,
     fileName,
     expectedSize,
-    stream: new PassThrough({ highWaterMark: RELAY_BUFFER_BYTES }),
+    stream,
     uploadStarted: false,
     downloadStarted: false,
     uploadComplete: false,
     failed: false,
+    cancelled: false,
     bytesUploaded: 0,
     bytesDownloaded: 0,
+    uploadRequest: null,
+    downloadRequest: null,
+    downloadResponse: null,
     timer: null,
     createdAt: Date.now()
   };
@@ -620,14 +684,22 @@ function getOrCreateRelaySession(transferId, fileName, expectedSize) {
   return session;
 }
 
-function failRelaySession(transferId, reason) {
+function failRelaySession(transferId, reason, cancelled = false) {
   const session = relaySessions.get(transferId);
   if (!session || session.failed) return;
   session.failed = true;
-  console.warn('CrossLAN relay stream session failed: transferId=' + transferId + ' reason=' + reason);
-  session.stream.destroy(new Error(reason));
+  session.cancelled = cancelled;
+  clearRelaySessionTimer(session);
   relaySessions.delete(transferId);
-  broadcastRelayProgress({ type: 'relay-transfer-error', transferId, fileName: session.fileName, message: reason });
+  console.warn('CrossLAN relay stream session failed: transferId=' + transferId + ' reason=' + reason);
+  session.uploadRequest?.destroy();
+  session.downloadRequest?.destroy();
+  session.downloadResponse?.destroy();
+  session.stream.destroy(new Error(reason));
+  session.uploadRequest = null;
+  session.downloadRequest = null;
+  session.downloadResponse = null;
+  broadcastRelayProgress({ type: 'relay-transfer-error', transferId, fileName: session.fileName, message: reason, cancelled });
 }
 
 function scheduleRelaySessionCleanup(session, delayMs) {
@@ -646,14 +718,74 @@ function clearRelaySessionTimer(session) {
   session.timer = null;
 }
 
+function markRelayTransferCancelled(transferId) {
+  if (!transferId) return;
+  pruneCancelledRelayTransfers();
+  cancelledRelayTransfers.set(transferId, Date.now() + RELAY_CANCEL_TOMBSTONE_TTL_MS);
+}
+
+function isRelayTransferCancelled(transferId) {
+  const expiresAt = cancelledRelayTransfers.get(transferId);
+  if (!expiresAt) return false;
+  if (expiresAt > Date.now()) return true;
+  cancelledRelayTransfers.delete(transferId);
+  return false;
+}
+
+function pruneCancelledRelayTransfers() {
+  const now = Date.now();
+  for (const [transferId, expiresAt] of cancelledRelayTransfers) {
+    if (expiresAt <= now) cancelledRelayTransfers.delete(transferId);
+  }
+}
+
+function rejectCancelledRelayTransfer(transferId, res, extra = {}) {
+  if (!isRelayTransferCancelled(transferId)) return false;
+  res.setHeader('Cache-Control', 'no-store');
+  res.status(410).json({
+    ok: false,
+    cancelled: true,
+    message: 'Transfer cancelled.',
+    ...extra
+  });
+  return true;
+}
+
+function cleanupDirectUploadSession(transferId, reason) {
+  const session = directUploads.get(transferId);
+  if (!session) return false;
+  directUploads.delete(transferId);
+  session.cancelled = reason === 'cancelled';
+  session.cancelNotified = true;
+  console.warn('CrossLAN direct upload cleanup: transferId=' + transferId + ' file=' + session.fileName + ' reason=' + reason + ' written=' + formatBytes(session.bytesWritten));
+  broadcastDirectProgress({
+    type: 'direct-transfer-error',
+    transferId,
+    fileName: session.fileName,
+    message: session.cancelled ? 'Transfer cancelled.' : reason || 'Direct transfer cancelled.',
+    cancelled: session.cancelled
+  });
+  session.request.destroy(new Error(reason || 'Direct transfer cancelled.'));
+  return true;
+}
+
 async function cleanupDirectChunkSession(transferId, reason) {
   const session = directChunkSessions.get(transferId);
   if (!session) return false;
   directChunkSessions.delete(transferId);
+  session.cancelled = reason === 'cancelled';
+  session.cancelNotified = true;
   console.warn('CrossLAN direct chunk session cleanup: transferId=' + transferId + ' file=' + session.fileName + ' reason=' + reason + ' written=' + formatBytes(session.bytesWritten));
+  broadcastDirectProgress({
+    type: 'direct-transfer-error',
+    transferId,
+    fileName: session.fileName,
+    message: session.cancelled ? 'Transfer cancelled.' : reason || 'Direct transfer cancelled.',
+    cancelled: session.cancelled
+  });
+  session.request?.destroy(new Error(reason || 'Direct transfer cancelled.'));
   session.stream.destroy(new Error(reason || 'Direct transfer cancelled.'));
   await fs.rm(session.targetPath, { force: true }).catch(() => {});
-  broadcastDirectProgress({ type: 'direct-transfer-error', transferId, fileName: session.fileName, message: reason || 'Direct transfer cancelled.' });
   return true;
 }
 

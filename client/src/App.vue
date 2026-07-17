@@ -126,10 +126,10 @@ import { DeviceStore } from './storage/DeviceStore';
 import { TransferEngine } from './transfer/TransferEngine';
 import type { BandwidthMode, DeviceRecord, FileMeta, LocalIdentity, ServerMode, SignalingMessage, TransferProgress } from './types';
 
-const PHONE_RELAY_THRESHOLD = 8 * 1024 * 1024;
-const DIRECT_SAVE_THRESHOLD = PHONE_RELAY_THRESHOLD;
+const P2P_MAX_FILE_SIZE = 32 * 1024 * 1024;
+const DIRECT_SAVE_THRESHOLD = P2P_MAX_FILE_SIZE;
 const SMALL_BATCH_MAX_TOTAL = 64 * 1024 * 1024;
-const SMALL_BATCH_MAX_FILE = PHONE_RELAY_THRESHOLD;
+const SMALL_BATCH_MAX_FILE = P2P_MAX_FILE_SIZE;
 const ACCEPT_TIMEOUT_MS = 120000;
 const RELAY_PACE_POLL_MS = 120;
 const RELAY_STATE_CACHE_MS = 300;
@@ -157,7 +157,20 @@ const messages = {
 type ThemePreference = 'system' | 'light' | 'dark';
 type PendingAccept = { resolve: () => void; reject: (error: Error) => void; timer: number };
 type DebugLevel = 'info' | 'warn' | 'error';
-type RelayState = { ok: boolean; failed?: boolean; message?: string; bufferBytes: number; bufferedBytes: number };
+type RelayState = {
+  ok: boolean;
+  failed?: boolean;
+  cancelled?: boolean;
+  message?: string;
+  expectedSize?: number;
+  bufferBytes: number;
+  bufferedBytes: number;
+  bytesUploaded?: number;
+  bytesDownloaded?: number;
+  uploadStarted?: boolean;
+  downloadStarted?: boolean;
+  uploadComplete?: boolean;
+};
 type HealthResponse = { ok?: boolean; name?: string; deploymentMode?: string; instanceId?: string; serverInstanceId?: string };
 type HostConnectionRole = { directSave: boolean; hostUi: boolean; serverMode?: ServerMode };
 type SpeedSamplePoint = { at: number; bytes: number };
@@ -202,6 +215,7 @@ const saveDirInput = ref('');
 const storageMessage = ref(messages.zh.loadStorage);
 const storageStatusOk = ref(true);
 let speedDisplayTimer: number | null = null;
+let pageHiddenAt: number | null = null;
 const progressItems = computed(() => [...progress.value.values()]);
 const isZh = computed(() => navigator.language.toLowerCase().startsWith('zh'));
 const t = computed(() => isZh.value ? messages.zh : messages.en);
@@ -276,8 +290,9 @@ onMounted(() => {
 
   void connectSignaling();
   void loadStorageDir();
-  speedDisplayTimer = window.setInterval(refreshActiveSpeedDisplays, SPEED_DISPLAY_REFRESH_MS);
+  startSpeedDisplayTimer();
   document.addEventListener('visibilitychange', handleVisibility);
+  window.addEventListener('online', handleConnectivityRestore);
   window.addEventListener('beforeunload', cleanup);
 });
 
@@ -511,7 +526,21 @@ async function handleAppMessage(message: SignalingMessage) {
   }
 
   if (message.type === 'direct-transfer-error') {
+    if (cancelledTransfers.has(message.transferId)) return;
     const current = progress.value.get(message.transferId);
+    if (message.cancelled && current) {
+      cancelledTransfers.add(message.transferId);
+      autoDownloadedTransfers.add(message.transferId);
+      activeUploads.get(message.transferId)?.abort();
+      activeUploads.delete(message.transferId);
+      markCancelled(
+        message.transferId,
+        current.direction === 'send' ? t.value.remoteCancelled : t.value.cancelled,
+        current.peerId
+      );
+      disableWakeLock();
+      return;
+    }
     if (current?.direction === 'send') return;
     progress.value = new Map(progress.value).set(message.transferId, {
       id: message.transferId,
@@ -555,7 +584,7 @@ async function handleAppMessage(message: SignalingMessage) {
   }
 
   if (message.type === 'relay-transfer-error') {
-    handleRelayTransferError(message.transferId, message.fileName, message.message);
+    handleRelayTransferError(message.transferId, message.fileName, message.message, message.cancelled);
     return;
   }
 
@@ -867,9 +896,18 @@ function handleRelayTransferReady(transferId: string, fileName: string, bytesWri
   disableWakeLock();
 }
 
-function handleRelayTransferError(transferId: string, fileName = 'Relay file', message: string) {
+function handleRelayTransferError(transferId: string, fileName = 'Relay file', message: string, cancelled = false) {
   if (cancelledTransfers.has(transferId)) return;
   const current = progress.value.get(transferId);
+  if (cancelled) {
+    cancelledTransfers.add(transferId);
+    autoDownloadedTransfers.add(transferId);
+    activeUploads.get(transferId)?.abort();
+    activeUploads.delete(transferId);
+    markCancelled(transferId, t.value.remoteCancelled, current?.peerId);
+    disableWakeLock();
+    return;
+  }
   if (current?.direction === 'send') return;
   addLog('relay transfer error received', { transferId, fileName, direction: current?.direction, message }, 'warn');
   setProgress({
@@ -1038,11 +1076,11 @@ function triggerBrowserDownload(url: string, fileName: string) {
 }
 
 function shouldDirectSave(target: DeviceRecord, file: File) {
-  return file.size >= DIRECT_SAVE_THRESHOLD && canDirectSaveTo(target);
+  return file.size > DIRECT_SAVE_THRESHOLD && canDirectSaveTo(target);
 }
 
 function shouldRelayToBrowserDownload(target: DeviceRecord, file: File) {
-  return file.size >= PHONE_RELAY_THRESHOLD && !shouldDirectSave(target, file);
+  return file.size > P2P_MAX_FILE_SIZE && !shouldDirectSave(target, file);
 }
 
 function canDirectSaveTo(target: DeviceRecord) {
@@ -1527,8 +1565,23 @@ function updateUploaded(id: string, uploaded: number) {
 }
 
 function markFailed(id: string, file: File, mode: 'direct' | 'relay', error: unknown) {
-  const message = error instanceof Error ? error.message : t.value.failed;
   const current = progress.value.get(id);
+  if (cancelledTransfers.has(id)) {
+    addLog('transfer failure ignored after cancellation', {
+      transferId: id,
+      file: file.name,
+      mode,
+      error: errorMessage(error)
+    }, 'warn');
+    return;
+  }
+  if (error instanceof Error && error.name === 'RelayCancelledError') {
+    cancelledTransfers.add(id);
+    autoDownloadedTransfers.add(id);
+    markCancelled(id, t.value.remoteCancelled, current?.peerId);
+    return;
+  }
+  const message = error instanceof Error ? error.message : t.value.failed;
   if (message === t.value.cancelled || message === t.value.remoteCancelled) {
     cancelledTransfers.add(id);
     autoDownloadedTransfers.add(id);
@@ -1813,12 +1866,17 @@ async function waitForRelayBufferRoom(transferId: string, signal: AbortSignal) {
   throw new Error(t.value.cancelled);
 }
 
-async function fetchRelayState(transferId: string, signal: AbortSignal) {
+async function fetchRelayState(transferId: string, signal: AbortSignal, force = false) {
   const cached = relayStateCache.get(transferId);
   const now = performance.now();
-  if (cached && now - cached.checkedAt < RELAY_STATE_CACHE_MS) return cached.state;
+  if (!force && cached && now - cached.checkedAt < RELAY_STATE_CACHE_MS) return cached.state;
   const response = await fetch(`/api/transfers/relay/${encodeURIComponent(transferId)}/state`, { signal, cache: 'no-store' });
   const data = await response.json() as RelayState;
+  if (response.status === 410 || data.cancelled) {
+    const error = new Error(t.value.remoteCancelled);
+    error.name = 'RelayCancelledError';
+    throw error;
+  }
   if (!response.ok) throw new Error(data.message || `Relay state failed: HTTP ${response.status}`);
   relayStateCache.set(transferId, { checkedAt: now, state: data });
   return data;
@@ -1872,18 +1930,105 @@ async function saveStorageDir() {
 }
 
 function handleVisibility() {
-  if (document.visibilityState === 'visible') {
-    signaling.requestDeviceList();
+  if (document.visibilityState === 'hidden') {
+    pageHiddenAt = performance.now();
+    stopSpeedDisplayTimer();
+    addLog('page moved to background; active transfers remain attached', {
+      transferIds: getActiveTransferIds()
+    });
+    return;
   }
+
+  const hiddenDurationMs = pageHiddenAt === null ? 0 : Math.max(performance.now() - pageHiddenAt, 0);
+  pageHiddenAt = null;
+  resetActiveSpeedWindows();
+  startSpeedDisplayTimer();
+  signaling.requestDeviceList();
+  void reconcileActiveRelayTransfers();
+  addLog('page returned to foreground', {
+    hiddenDurationMs: Math.round(hiddenDurationMs),
+    transferIds: getActiveTransferIds()
+  });
+}
+
+function handleConnectivityRestore() {
+  signaling.requestDeviceList();
+  resetActiveSpeedWindows();
+  void reconcileActiveRelayTransfers();
+}
+
+function startSpeedDisplayTimer() {
+  if (speedDisplayTimer !== null || document.visibilityState === 'hidden') return;
+  speedDisplayTimer = window.setInterval(refreshActiveSpeedDisplays, SPEED_DISPLAY_REFRESH_MS);
+}
+
+function stopSpeedDisplayTimer() {
+  if (speedDisplayTimer === null) return;
+  window.clearInterval(speedDisplayTimer);
+  speedDisplayTimer = null;
+}
+
+function getActiveTransferIds() {
+  return [...progress.value.values()].filter(item => !item.done).map(item => item.id);
+}
+
+function resetActiveSpeedWindows() {
+  const now = performance.now();
+  for (const item of progress.value.values()) {
+    if (item.done) continue;
+    const state = speedSamples.get(item.id);
+    if (!state) continue;
+    state.points = [{ at: now, bytes: item.bytesTransferred }];
+  }
+}
+
+async function reconcileActiveRelayTransfers() {
+  const relayItems = [...progress.value.values()].filter(item => item.mode === 'relay' && !item.done);
+  await Promise.all(relayItems.map(async item => {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 2500);
+    try {
+      relayStateCache.delete(item.id);
+      const state = await fetchRelayState(item.id, controller.signal, true);
+      const serverBytes = item.direction === 'send' ? state.bytesUploaded : state.bytesDownloaded;
+      if (typeof serverBytes !== 'number' || !Number.isFinite(serverBytes)) return;
+      const totalBytes = Math.max(item.totalBytes, state.expectedSize || 0);
+      const bytesTransferred = Math.min(totalBytes || serverBytes, Math.max(item.bytesTransferred, serverBytes));
+      setProgress(withSpeedSample({
+        ...item,
+        bytesTransferred,
+        totalBytes: totalBytes || item.totalBytes
+      }));
+      addLog('relay progress reconciled after background', {
+        transferId: item.id,
+        direction: item.direction,
+        bytesTransferred,
+        serverBytes
+      });
+    } catch (error) {
+      if (error instanceof Error && error.name === 'RelayCancelledError') {
+        cancelledTransfers.add(item.id);
+        autoDownloadedTransfers.add(item.id);
+        activeUploads.get(item.id)?.abort();
+        activeUploads.delete(item.id);
+        markCancelled(item.id, t.value.remoteCancelled, item.peerId);
+        return;
+      }
+      addLog('relay progress reconciliation skipped', {
+        transferId: item.id,
+        error: errorMessage(error)
+      }, 'warn');
+    } finally {
+      window.clearTimeout(timer);
+    }
+  }));
 }
 
 function cleanup() {
   document.removeEventListener('visibilitychange', handleVisibility);
+  window.removeEventListener('online', handleConnectivityRestore);
   window.removeEventListener('beforeunload', cleanup);
-  if (speedDisplayTimer !== null) {
-    window.clearInterval(speedDisplayTimer);
-    speedDisplayTimer = null;
-  }
+  stopSpeedDisplayTimer();
   for (const pending of pendingDirectAccepts.values()) window.clearTimeout(pending.timer);
   pendingDirectAccepts.clear();
   for (const pending of pendingRelayAccepts.values()) window.clearTimeout(pending.timer);

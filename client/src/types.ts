@@ -61,11 +61,11 @@ export type SignalingMessage =
   | { type: 'relay-transfer-reject'; from: string; to?: string; transferId: string; reason?: string }
   | { type: 'relay-transfer-progress'; from: string; to?: string; transferId: string; fileName: string; bytesTransferred: number; totalBytes: number }
   | { type: 'relay-transfer-ready'; from: string; to?: string; transferId: string; fileName: string; downloadUrl: string; bytesWritten: number }
-  | { type: 'relay-transfer-error'; transferId: string; fileName?: string; message: string }
+  | { type: 'relay-transfer-error'; transferId: string; fileName?: string; message: string; cancelled?: boolean }
   | { type: 'transfer-cancel'; from: string; to?: string; transferId: string; reason?: string }
   | { type: 'direct-transfer-progress'; transferId: string; fileName: string; bytesTransferred: number; totalBytes: number }
   | { type: 'direct-transfer-complete'; transferId: string; fileName: string; bytesTransferred: number; totalBytes: number; path: string }
-  | { type: 'direct-transfer-error'; transferId: string; fileName?: string; message: string }
+  | { type: 'direct-transfer-error'; transferId: string; fileName?: string; message: string; cancelled?: boolean }
   | { type: 'peer-unavailable'; to: string }
   | { type: 'network-probe-event'; event: unknown }
   | { type: 'error'; message: string };
