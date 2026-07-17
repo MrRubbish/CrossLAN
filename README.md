@@ -126,7 +126,17 @@ volumes:
 - Multiple selected small files are packed into uncompressed `.zip` batches so the receiver confirms once per small batch. Files larger than `8 MB`, or batches beyond `64 MB` total, are sent sequentially as original files instead of being packed. CrossLAN does not auto-unzip the batch on the receiver.
 
 The large-file HTTP paths stream data and do not intentionally buffer the whole file in frontend memory.
-For PC-to-phone browser downloads, the sender's upload speed is naturally back-pressured by the phone download speed. The relay memory buffer defaults to `256` MB and can be tuned with `CROSSLAN_RELAY_BUFFER_MB`; a larger buffer absorbs short Wi-Fi stalls, but can also make upload progress look more bursty because the PC fills the buffer and then waits for the phone/browser download path.
+For PC-to-phone browser downloads, the sender's upload speed is naturally back-pressured by the phone download speed. Relay uses explicit high/low-water flow control: each session normally targets `32` MB, pauses at `64` MB, and resumes after draining to `24` MB. All active Relay sessions share a `256` MB memory budget, so several slow receivers cannot each allocate an independent 256 MB buffer.
+
+Relay memory settings:
+
+- `CROSSLAN_RELAY_TOTAL_BUFFER_MB`: total budget shared by all active Relay sessions; default `256`.
+- `CROSSLAN_RELAY_BUFFER_MB`: backward-compatible alias for the total budget.
+- `CROSSLAN_RELAY_TARGET_MB`: normal backlog target exposed to paced clients; default `32`.
+- `CROSSLAN_RELAY_HIGH_WATER_MB`: per-session pause threshold; default `64`.
+- `CROSSLAN_RELAY_LOW_WATER_MB`: per-session resume threshold; default `24`.
+
+The limits are clamped to `low <= target <= high <= total`. `-RelayBufferMb` in the PowerShell helpers configures the shared total budget.
 The old relay temporary disk cache path is not used for large browser-download relay transfers.
 
 Small batch ZIP packaging is done in the sender browser before transfer. It is intentionally limited to small batches because the generated `.zip` exists as a browser-side file before being sent.

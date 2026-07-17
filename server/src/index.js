@@ -14,6 +14,7 @@ import { WebSocketServer } from 'ws';
 import { SignalingHub } from './signaling/SignalingHub.js';
 import { MdnsDiscovery } from './discovery/MdnsDiscovery.js';
 import { NetworkProber } from './network/NetworkProber.js';
+import { RelayBufferPool } from './relay/RelayBufferPool.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const port = Number(process.env.PORT || 8080);
@@ -30,7 +31,10 @@ const DIRECT_UPLOAD_LOG_INTERVAL_MS = 30000;
 const RELAY_UPLOAD_LOG_INTERVAL_MS = 5000;
 const DIRECT_UPLOAD_WRITE_BUFFER = 8 * 1024 * 1024;
 const RELAY_SESSION_TTL_MS = Number(process.env.CROSSLAN_RELAY_SESSION_TTL_MS || 5 * 60 * 1000);
-const RELAY_BUFFER_BYTES = Math.max(Number(process.env.CROSSLAN_RELAY_BUFFER_MB || 256), 1) * 1024 * 1024;
+const RELAY_TOTAL_BUFFER_BYTES = readMegabytesAsBytes(process.env.CROSSLAN_RELAY_TOTAL_BUFFER_MB, process.env.CROSSLAN_RELAY_BUFFER_MB, 256);
+const RELAY_HIGH_WATER_BYTES = Math.min(readMegabytesAsBytes(process.env.CROSSLAN_RELAY_HIGH_WATER_MB, undefined, 64), RELAY_TOTAL_BUFFER_BYTES);
+const RELAY_TARGET_BUFFER_BYTES = Math.min(readMegabytesAsBytes(process.env.CROSSLAN_RELAY_TARGET_MB, undefined, 32), RELAY_HIGH_WATER_BYTES);
+const RELAY_LOW_WATER_BYTES = Math.min(readMegabytesAsBytes(process.env.CROSSLAN_RELAY_LOW_WATER_MB, undefined, 24), RELAY_TARGET_BUFFER_BYTES);
 const RELAY_CANCEL_TOMBSTONE_TTL_MS = Number(process.env.CROSSLAN_RELAY_CANCEL_TOMBSTONE_TTL_MS || 30 * 60 * 1000);
 const app = express();
 const server = createServer(app);
@@ -39,6 +43,12 @@ let redirectServer = null;
 const wss = new WebSocketServer({ noServer: true });
 const networkProber = new NetworkProber();
 const relaySessions = new Map();
+const relayBufferPool = new RelayBufferPool({
+  targetBytes: RELAY_TARGET_BUFFER_BYTES,
+  highWaterBytes: RELAY_HIGH_WATER_BYTES,
+  lowWaterBytes: RELAY_LOW_WATER_BYTES,
+  totalBytes: RELAY_TOTAL_BUFFER_BYTES
+});
 const cancelledRelayTransfers = new Map();
 const directUploads = new Map();
 const directChunkSessions = new Map();
@@ -305,10 +315,8 @@ app.post('/api/transfers/relay/:transferId', async (req, res) => {
   session.expectedSize = expectedSize;
   clearRelaySessionTimer(session);
   console.log('CrossLAN relay stream upload started: ' + fileName + ' transferId=' + transferId + ' size=' + formatBytes(expectedSize));
-
-  req.on('data', chunk => {
-    bytesWritten += chunk.length;
-    session.bytesUploaded = bytesWritten;
+  const reportUploadProgress = uploaded => {
+    bytesWritten = uploaded;
     const now = Date.now();
     if (now - lastLogAt > RELAY_UPLOAD_LOG_INTERVAL_MS) {
       const intervalBytes = bytesWritten - lastLoggedBytes;
@@ -318,7 +326,7 @@ app.post('/api/transfers/relay/:transferId', async (req, res) => {
       lastLoggedBytes = bytesWritten;
       console.log('CrossLAN relay stream upload progress: ' + fileName + ' transferId=' + transferId + ' ' + formatBytes(bytesWritten) + ' / ' + formatBytes(expectedSize) + ' @ ' + formatBytes(intervalBytes / intervalSeconds) + '/s avg ' + formatBytes(bytesWritten / elapsedSeconds) + '/s');
     }
-  });
+  };
   req.on('aborted', () => {
     console.warn('CrossLAN relay stream upload aborted: ' + fileName + ' transferId=' + transferId + ' written=' + formatBytes(bytesWritten));
     failRelaySession(transferId, 'Sender aborted upload.');
@@ -329,13 +337,14 @@ app.post('/api/transfers/relay/:transferId', async (req, res) => {
   });
 
   try {
-    await pipeline(req, session.stream);
+    await writeRelayRequestToSession(req, session, reportUploadProgress);
     if (expectedSize > 0 && bytesWritten !== expectedSize) {
       failRelaySession(transferId, `Upload size mismatch: ${bytesWritten}/${expectedSize}`);
       res.status(400).json({ ok: false, message: `Upload size mismatch: ${bytesWritten}/${expectedSize}` });
       return;
     }
 
+    session.stream.end();
     session.uploadComplete = true;
     const elapsedSeconds = Math.max((Date.now() - startedAt) / 1000, 0.001);
     console.log('CrossLAN relay stream upload completed: ' + fileName + ' transferId=' + transferId + ' bytes=' + formatBytes(bytesWritten) + ' avg=' + formatBytes(bytesWritten / elapsedSeconds) + '/s');
@@ -383,14 +392,8 @@ app.post('/api/transfers/relay/:transferId/chunk', async (req, res) => {
       return;
     }
 
-    let chunkBytes = 0;
-    req.on('data', chunk => {
-      chunkBytes += chunk.length;
-      session.bytesUploaded += chunk.length;
-    });
-
     session.uploadRequest = req;
-    await writeRequestToStream(req, session.stream);
+    const chunkBytes = await writeRelayRequestToSession(req, session);
     if (session.failed) throw new Error('Relay session failed.');
 
     if (isFinal) {
@@ -430,24 +433,21 @@ app.delete('/api/transfers/relay/:transferId', (req, res) => {
 
 app.get('/api/transfers/relay/:transferId/state', (req, res) => {
   const transferId = sanitizePathSegment(req.params.transferId);
-  if (rejectCancelledRelayTransfer(transferId, res, {
-    bufferBytes: RELAY_BUFFER_BYTES,
-    bufferedBytes: 0
-  })) return;
+  if (rejectCancelledRelayTransfer(transferId, res, getRelayBufferStateFields())) return;
   const session = relaySessions.get(transferId);
   if (!session) {
-    res.status(404).json({ ok: false, message: 'Relay session not found.', bufferBytes: RELAY_BUFFER_BYTES, bufferedBytes: 0 });
+    res.status(404).json({ ok: false, message: 'Relay session not found.', ...getRelayBufferStateFields() });
     return;
   }
 
+  const bufferState = getRelayBufferStateFields(session);
   res.setHeader('Cache-Control', 'no-store');
   res.json({
     ok: true,
     transferId,
     fileName: session.fileName,
     expectedSize: session.expectedSize,
-    bufferBytes: RELAY_BUFFER_BYTES,
-    bufferedBytes: Math.max(session.bytesUploaded - session.bytesDownloaded, 0),
+    ...bufferState,
     bytesUploaded: session.bytesUploaded,
     bytesDownloaded: session.bytesDownloaded,
     uploadStarted: session.uploadStarted,
@@ -488,6 +488,7 @@ app.get('/api/transfers/relay/:transferId/:fileName', async (req, res) => {
     transform(chunk, _encoding, callback) {
       bytesDownloaded += chunk.length;
       session.bytesDownloaded = bytesDownloaded;
+      relayBufferPool.release(transferId, chunk.length);
       const now = Date.now();
       if (now - lastBroadcastAt > 500 || (session.expectedSize > 0 && bytesDownloaded >= session.expectedSize)) {
         lastBroadcastAt = now;
@@ -658,7 +659,8 @@ function getOrCreateRelaySession(transferId, fileName, expectedSize) {
   let session = relaySessions.get(transferId);
   if (session) return session;
 
-  const stream = new PassThrough({ highWaterMark: RELAY_BUFFER_BYTES });
+  relayBufferPool.register(transferId);
+  const stream = new PassThrough({ highWaterMark: RELAY_HIGH_WATER_BYTES });
   stream.on('error', () => {});
   session = {
     transferId,
@@ -680,7 +682,7 @@ function getOrCreateRelaySession(transferId, fileName, expectedSize) {
   };
   relaySessions.set(transferId, session);
   scheduleRelaySessionCleanup(session, RELAY_SESSION_TTL_MS);
-  console.log('CrossLAN relay stream session created: transferId=' + transferId + ' file=' + fileName + ' buffer=' + formatBytes(RELAY_BUFFER_BYTES));
+  console.log('CrossLAN relay stream session created: transferId=' + transferId + ' file=' + fileName + ' target=' + formatBytes(RELAY_TARGET_BUFFER_BYTES) + ' high=' + formatBytes(RELAY_HIGH_WATER_BYTES) + ' low=' + formatBytes(RELAY_LOW_WATER_BYTES) + ' total=' + formatBytes(RELAY_TOTAL_BUFFER_BYTES));
   return session;
 }
 
@@ -691,6 +693,7 @@ function failRelaySession(transferId, reason, cancelled = false) {
   session.cancelled = cancelled;
   clearRelaySessionTimer(session);
   relaySessions.delete(transferId);
+  relayBufferPool.close(transferId, new Error(reason));
   console.warn('CrossLAN relay stream session failed: transferId=' + transferId + ' reason=' + reason);
   session.uploadRequest?.destroy();
   session.downloadRequest?.destroy();
@@ -708,6 +711,7 @@ function scheduleRelaySessionCleanup(session, delayMs) {
     console.log('CrossLAN relay stream session cleanup: transferId=' + session.transferId + ' uploaded=' + formatBytes(session.bytesUploaded) + ' downloaded=' + formatBytes(session.bytesDownloaded));
     session.stream.destroy();
     relaySessions.delete(session.transferId);
+    relayBufferPool.close(session.transferId);
   }, delayMs);
   session.timer.unref?.();
 }
@@ -793,6 +797,52 @@ async function writeRequestToStream(req, stream) {
   for await (const chunk of req) {
     if (!stream.write(chunk)) await once(stream, 'drain');
   }
+}
+
+async function writeRelayRequestToSession(req, session, onProgress) {
+  let requestBytes = 0;
+  for await (const value of req) {
+    const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+    let offset = 0;
+    while (offset < chunk.length) {
+      const bytesReserved = await relayBufferPool.reserve(session.transferId, chunk.length - offset);
+      const nextOffset = offset + bytesReserved;
+      relayBufferPool.commit(session.transferId, bytesReserved);
+      session.bytesUploaded += bytesReserved;
+      let canContinue;
+      try {
+        canContinue = session.stream.write(chunk.subarray(offset, nextOffset));
+      } catch (error) {
+        session.bytesUploaded -= bytesReserved;
+        relayBufferPool.release(session.transferId, bytesReserved);
+        throw error;
+      }
+      offset = nextOffset;
+      requestBytes += bytesReserved;
+      onProgress?.(session.bytesUploaded, requestBytes);
+      if (!canContinue) await once(session.stream, 'drain');
+    }
+  }
+  return requestBytes;
+}
+
+function getRelayBufferStateFields(session) {
+  const snapshot = session ? relayBufferPool.snapshot(session.transferId) : null;
+  return {
+    bufferBytes: RELAY_HIGH_WATER_BYTES,
+    targetBufferBytes: RELAY_TARGET_BUFFER_BYTES,
+    lowWaterBytes: RELAY_LOW_WATER_BYTES,
+    totalBufferBytes: RELAY_TOTAL_BUFFER_BYTES,
+    totalBufferedBytes: relayBufferPool.totalBufferedBytes,
+    bufferedBytes: snapshot?.bufferedBytes || 0,
+    backpressured: snapshot?.backpressured || false
+  };
+}
+
+function readMegabytesAsBytes(primaryValue, fallbackValue, defaultMegabytes) {
+  const parsed = Number(primaryValue ?? fallbackValue ?? defaultMegabytes);
+  const megabytes = Number.isFinite(parsed) ? Math.max(parsed, 1) : defaultMegabytes;
+  return Math.floor(megabytes * 1024 * 1024);
 }
 
 function encodeRFC5987(value) {
