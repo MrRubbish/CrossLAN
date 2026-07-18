@@ -29,33 +29,31 @@ export class RelayBufferPool {
   }
 
   async reserve(sessionId, requestedBytes) {
-    const requested = Math.floor(requestedBytes);
-    if (!Number.isSafeInteger(requested) || requested <= 0) {
-      throw new TypeError('Relay reservation size must be a positive safe integer.');
-    }
+    this.#validateRequestedBytes(requestedBytes);
 
     while (true) {
+      const reservedBytes = this.tryReserve(sessionId, requestedBytes);
+      if (reservedBytes > 0) return reservedBytes;
       const state = this.#requireSession(sessionId);
-      const sessionBuffered = state.bufferedBytes + state.reservedBytes;
-
-      if (state.highWaterBackpressured && sessionBuffered <= this.lowWaterBytes) {
-        state.highWaterBackpressured = false;
-      }
-      if (!state.highWaterBackpressured && sessionBuffered >= this.highWaterBytes) {
-        state.highWaterBackpressured = true;
-      }
-
-      const sessionCapacity = this.highWaterBytes - sessionBuffered;
-      const totalCapacity = this.totalBytes - this.totalBufferedBytes;
-      if (!state.highWaterBackpressured && sessionCapacity > 0 && totalCapacity > 0) {
-        const reservedBytes = Math.min(requested, sessionCapacity, totalCapacity);
-        state.reservedBytes += reservedBytes;
-        this.totalBufferedBytes += reservedBytes;
-        return reservedBytes;
-      }
-
       await this.#waitForCapacity(sessionId, state);
     }
+  }
+
+  tryReserve(sessionId, requestedBytes) {
+    const requested = Math.floor(requestedBytes);
+    this.#validateRequestedBytes(requested);
+    const state = this.#requireSession(sessionId);
+    this.#refreshBackpressure(state);
+    if (state.highWaterBackpressured) return 0;
+
+    const sessionCapacity = this.highWaterBytes - state.bufferedBytes - state.reservedBytes;
+    const totalCapacity = this.totalBytes - this.totalBufferedBytes;
+    if (sessionCapacity <= 0 || totalCapacity <= 0) return 0;
+
+    const reservedBytes = Math.min(requested, sessionCapacity, totalCapacity);
+    state.reservedBytes += reservedBytes;
+    this.totalBufferedBytes += reservedBytes;
+    return reservedBytes;
   }
 
   commit(sessionId, committedBytes) {
@@ -78,7 +76,7 @@ export class RelayBufferPool {
     if (released === 0) return 0;
     state.reservedBytes -= released;
     this.totalBufferedBytes -= released;
-    this.#wakeWaiters();
+    this.#wakeEligibleWaiters();
     return released;
   }
 
@@ -90,10 +88,8 @@ export class RelayBufferPool {
 
     state.bufferedBytes -= released;
     this.totalBufferedBytes -= released;
-    if (state.highWaterBackpressured && state.bufferedBytes + state.reservedBytes <= this.lowWaterBytes) {
-      state.highWaterBackpressured = false;
-    }
-    this.#wakeWaiters();
+    this.#refreshBackpressure(state);
+    this.#wakeEligibleWaiters();
     return released;
   }
 
@@ -131,6 +127,22 @@ export class RelayBufferPool {
     return state;
   }
 
+  #validateRequestedBytes(requestedBytes) {
+    const requested = Math.floor(requestedBytes);
+    if (!Number.isSafeInteger(requested) || requested <= 0) {
+      throw new TypeError('Relay reservation size must be a positive safe integer.');
+    }
+  }
+
+  #refreshBackpressure(state) {
+    const sessionBuffered = state.bufferedBytes + state.reservedBytes;
+    if (state.highWaterBackpressured && sessionBuffered <= this.lowWaterBytes) {
+      state.highWaterBackpressured = false;
+    } else if (!state.highWaterBackpressured && sessionBuffered >= this.highWaterBytes) {
+      state.highWaterBackpressured = true;
+    }
+  }
+
   #waitForCapacity(sessionId, state) {
     state.waitingWriters += 1;
     return new Promise((resolve, reject) => {
@@ -151,7 +163,21 @@ export class RelayBufferPool {
     });
   }
 
-  #wakeWaiters() {
-    for (const waiter of [...this.waiters]) waiter.resolve();
+  #wakeEligibleWaiters() {
+    if (this.totalBufferedBytes >= this.totalBytes) return 0;
+    let woken = 0;
+    for (const waiter of [...this.waiters]) {
+      const state = this.sessions.get(waiter.sessionId);
+      if (!state) {
+        waiter.reject(new Error('Relay buffer session is closed.'));
+        continue;
+      }
+      this.#refreshBackpressure(state);
+      if (state.highWaterBackpressured) continue;
+      if (state.bufferedBytes + state.reservedBytes >= this.highWaterBytes) continue;
+      waiter.resolve();
+      woken += 1;
+    }
+    return woken;
   }
 }

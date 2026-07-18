@@ -7,7 +7,7 @@
     "dev": "concurrently \"npm --workspace server run dev\" \"npm --workspace client run dev\"",
     "build": "npm --workspace client run build",
     "start": "npm --workspace server start",
-    "check": "npm --workspace client run typecheck && npm --workspace server run check"
+    "check": "npm --workspace client run typecheck && npm --workspace client run test:transfer && npm --workspace server run check"
   },
   "workspaces": ["client", "server"],
   "devDependencies": {

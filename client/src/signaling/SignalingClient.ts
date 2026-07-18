@@ -127,7 +127,17 @@ function summarizeMessage(message: Record<string, unknown>) {
   if (copy.candidate) copy.candidate = '[ice-candidate]';
   if (copy.fileMeta && typeof copy.fileMeta === 'object') {
     const meta = copy.fileMeta as Record<string, unknown>;
-    copy.fileMeta = { transferId: meta.transferId, name: meta.name, size: meta.size, type: meta.type };
+    copy.fileMeta = {
+      transferId: meta.transferId,
+      name: meta.name,
+      size: meta.size,
+      type: meta.type,
+      batchId: meta.batchId,
+      batchIndex: meta.batchIndex,
+      batchTotal: meta.batchTotal,
+      packageType: meta.packageType,
+      packageCount: meta.packageCount
+    };
   }
   return copy;
 }

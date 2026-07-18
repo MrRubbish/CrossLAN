@@ -1,5 +1,5 @@
 param(
-  [int]$Port = 8080,
+  [int]$Port = 8765,
   [string]$SaveDir = "$env:USERPROFILE\Downloads\CrossLAN",
   [int]$RelayBufferMb = 256
 )

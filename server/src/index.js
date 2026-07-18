@@ -17,7 +17,7 @@ import { NetworkProber } from './network/NetworkProber.js';
 import { RelayBufferPool } from './relay/RelayBufferPool.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const port = Number(process.env.PORT || 8080);
+const port = Number(process.env.PORT || 8765);
 const httpsPort = Number(process.env.HTTPS_PORT || 8443);
 const httpsKeyPath = process.env.CROSSLAN_HTTPS_KEY || '';
 const httpsCertPath = process.env.CROSSLAN_HTTPS_CERT || '';
@@ -36,8 +36,17 @@ const RELAY_HIGH_WATER_BYTES = Math.min(readMegabytesAsBytes(process.env.CROSSLA
 const RELAY_TARGET_BUFFER_BYTES = Math.min(readMegabytesAsBytes(process.env.CROSSLAN_RELAY_TARGET_MB, undefined, 32), RELAY_HIGH_WATER_BYTES);
 const RELAY_LOW_WATER_BYTES = Math.min(readMegabytesAsBytes(process.env.CROSSLAN_RELAY_LOW_WATER_MB, undefined, 24), RELAY_TARGET_BUFFER_BYTES);
 const RELAY_CANCEL_TOMBSTONE_TTL_MS = Number(process.env.CROSSLAN_RELAY_CANCEL_TOMBSTONE_TTL_MS || 30 * 60 * 1000);
+const RELAY_COMPLETED_TOMBSTONE_TTL_MS = Number(process.env.CROSSLAN_RELAY_COMPLETED_TOMBSTONE_TTL_MS || 30 * 60 * 1000);
+const RELAY_COMPLETED_SESSION_GRACE_MS = Number(process.env.CROSSLAN_RELAY_COMPLETED_SESSION_GRACE_MS || 30000);
+const HTTP_STREAM_HIGH_WATER_BYTES = 1024 * 1024;
+const HTTP_SERVER_OPTIONS = {
+  highWaterMark: HTTP_STREAM_HIGH_WATER_BYTES,
+  keepAlive: true,
+  keepAliveInitialDelay: 1000,
+  noDelay: true
+};
 const app = express();
-const server = createServer(app);
+const server = createServer(HTTP_SERVER_OPTIONS, app);
 let activeServer = server;
 let redirectServer = null;
 const wss = new WebSocketServer({ noServer: true });
@@ -50,6 +59,7 @@ const relayBufferPool = new RelayBufferPool({
   totalBytes: RELAY_TOTAL_BUFFER_BYTES
 });
 const cancelledRelayTransfers = new Map();
+const completedRelayTransfers = new Map();
 const directUploads = new Map();
 const directChunkSessions = new Map();
 const mdns = new MdnsDiscovery({
@@ -302,6 +312,7 @@ app.post('/api/transfers/relay/:transferId', async (req, res) => {
     return;
   }
   if (rejectCancelledRelayTransfer(transferId, res)) return;
+  if (rejectCompletedRelayTransfer(transferId, res)) return;
 
   const session = getOrCreateRelaySession(transferId, fileName, expectedSize);
   if (session.uploadStarted) {
@@ -346,9 +357,10 @@ app.post('/api/transfers/relay/:transferId', async (req, res) => {
 
     session.stream.end();
     session.uploadComplete = true;
+    broadcastRelaySessionProgress(session, true);
     const elapsedSeconds = Math.max((Date.now() - startedAt) / 1000, 0.001);
     console.log('CrossLAN relay stream upload completed: ' + fileName + ' transferId=' + transferId + ' bytes=' + formatBytes(bytesWritten) + ' avg=' + formatBytes(bytesWritten / elapsedSeconds) + '/s');
-    scheduleRelaySessionCleanup(session, 30000);
+    scheduleRelaySessionAfterUpload(session);
     res.json({ ok: true, fileName, bytesWritten });
   } catch (error) {
     if (!session.failed) failRelaySession(transferId, error instanceof Error ? error.message : 'Relay stream upload failed.');
@@ -371,6 +383,7 @@ app.post('/api/transfers/relay/:transferId/chunk', async (req, res) => {
     return;
   }
   if (rejectCancelledRelayTransfer(transferId, res)) return;
+  if (rejectCompletedRelayTransfer(transferId, res)) return;
 
   const session = getOrCreateRelaySession(transferId, fileName, expectedSize);
   try {
@@ -404,9 +417,10 @@ app.post('/api/transfers/relay/:transferId/chunk', async (req, res) => {
       }
       session.uploadComplete = true;
       session.stream.end();
+      broadcastRelaySessionProgress(session, true);
       const elapsedSeconds = Math.max((Date.now() - (session.startedAt || Date.now())) / 1000, 0.001);
       console.log('CrossLAN relay chunk upload completed: ' + fileName + ' transferId=' + transferId + ' bytes=' + formatBytes(session.bytesUploaded) + ' avg=' + formatBytes(session.bytesUploaded / elapsedSeconds) + '/s');
-      scheduleRelaySessionCleanup(session, 30000);
+      scheduleRelaySessionAfterUpload(session);
       res.json({ ok: true, fileName, bytesWritten: session.bytesUploaded });
       return;
     }
@@ -424,6 +438,10 @@ app.post('/api/transfers/relay/:transferId/chunk', async (req, res) => {
 app.delete('/api/transfers/relay/:transferId', (req, res) => {
   const transferId = sanitizePathSegment(req.params.transferId);
   const session = relaySessions.get(transferId);
+  if (getCompletedRelayTransfer(transferId)) {
+    res.json({ ok: true, cleaned: false, completed: true });
+    return;
+  }
   markRelayTransferCancelled(transferId);
   if (session) {
     failRelaySession(transferId, 'Transfer cancelled.', true);
@@ -436,6 +454,26 @@ app.get('/api/transfers/relay/:transferId/state', (req, res) => {
   if (rejectCancelledRelayTransfer(transferId, res, getRelayBufferStateFields())) return;
   const session = relaySessions.get(transferId);
   if (!session) {
+    const completed = getCompletedRelayTransfer(transferId);
+    if (completed) {
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({
+        ok: true,
+        transferId,
+        fileName: completed.fileName,
+        expectedSize: completed.expectedSize,
+        ...getRelayBufferStateFields(),
+        bytesUploaded: completed.bytesUploaded,
+        bytesDownloaded: completed.bytesDownloaded,
+        uploadStarted: true,
+        downloadStarted: true,
+        uploadComplete: true,
+        downloadComplete: true,
+        completed: true,
+        failed: false
+      });
+      return;
+    }
     res.status(404).json({ ok: false, message: 'Relay session not found.', ...getRelayBufferStateFields() });
     return;
   }
@@ -453,6 +491,7 @@ app.get('/api/transfers/relay/:transferId/state', (req, res) => {
     uploadStarted: session.uploadStarted,
     downloadStarted: session.downloadStarted,
     uploadComplete: session.uploadComplete,
+    downloadComplete: session.downloadComplete,
     failed: session.failed
   });
 });
@@ -462,6 +501,7 @@ app.get('/api/transfers/relay/:transferId/:fileName', async (req, res) => {
   const fileName = sanitizeFileName(req.params.fileName);
   const expectedSize = Number(req.query.size || 0);
   if (rejectCancelledRelayTransfer(transferId, res)) return;
+  if (rejectCompletedRelayTransfer(transferId, res)) return;
   const session = getOrCreateRelaySession(transferId, fileName, expectedSize);
 
   if (session.downloadStarted) {
@@ -481,19 +521,17 @@ app.get('/api/transfers/relay/:transferId/:fileName', async (req, res) => {
   res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeRFC5987(fileName)}`);
   if (session.expectedSize > 0) res.setHeader('Content-Length', String(session.expectedSize));
   res.setHeader('Cache-Control', 'no-store');
+  res.flushHeaders();
 
   let bytesDownloaded = 0;
-  let lastBroadcastAt = 0;
   const progressTap = new Transform({
+    readableHighWaterMark: HTTP_STREAM_HIGH_WATER_BYTES,
+    writableHighWaterMark: HTTP_STREAM_HIGH_WATER_BYTES,
     transform(chunk, _encoding, callback) {
       bytesDownloaded += chunk.length;
       session.bytesDownloaded = bytesDownloaded;
       relayBufferPool.release(transferId, chunk.length);
-      const now = Date.now();
-      if (now - lastBroadcastAt > 500 || (session.expectedSize > 0 && bytesDownloaded >= session.expectedSize)) {
-        lastBroadcastAt = now;
-        broadcastRelayProgress({ type: 'relay-transfer-progress', transferId, fileName, bytesTransferred: bytesDownloaded, totalBytes: session.expectedSize });
-      }
+      broadcastRelaySessionProgress(session);
       callback(null, chunk);
     }
   });
@@ -502,16 +540,31 @@ app.get('/api/transfers/relay/:transferId/:fileName', async (req, res) => {
     if (session.downloadResponse === res) session.downloadResponse = null;
     console.log('CrossLAN relay stream download closed: transferId=' + transferId + ' file=' + fileName + ' downloaded=' + formatBytes(bytesDownloaded) + ' status=' + res.statusCode);
     if (session.failed) return;
-    if (!session.uploadComplete && bytesDownloaded < session.expectedSize) {
+    if (!session.downloadComplete && !res.writableFinished) {
       failRelaySession(transferId, 'Receiver closed download.');
     } else {
-      scheduleRelaySessionCleanup(session, 30000);
+      scheduleRelaySessionCleanup(session, RELAY_COMPLETED_SESSION_GRACE_MS);
     }
   });
 
   try {
     await pipeline(session.stream, progressTap, res);
+    if (session.expectedSize > 0 && bytesDownloaded !== session.expectedSize) {
+      throw new Error(`Download size mismatch: ${bytesDownloaded}/${session.expectedSize}`);
+    }
+    session.downloadComplete = true;
+    recordCompletedRelayTransfer(session);
+    broadcastRelaySessionProgress(session, true);
+    broadcastRelayProgress({
+      type: 'relay-transfer-complete',
+      transferId,
+      fileName,
+      bytesUploaded: session.bytesUploaded,
+      bytesDownloaded,
+      totalBytes: session.expectedSize || bytesDownloaded
+    });
     console.log('CrossLAN relay stream download finished: transferId=' + transferId + ' file=' + fileName + ' bytes=' + formatBytes(bytesDownloaded));
+    scheduleRelaySessionCleanup(session, RELAY_COMPLETED_SESSION_GRACE_MS);
   } catch (error) {
     if (!session.failed) failRelaySession(transferId, error instanceof Error ? error.message : 'Relay stream download failed.');
     console.warn('CrossLAN relay stream download failed: transferId=' + transferId + ' file=' + fileName + ' ' + (error instanceof Error ? error.message : error));
@@ -555,12 +608,12 @@ try {
       key: await fs.readFile(httpsKeyPath),
       cert: await fs.readFile(httpsCertPath)
     };
-    activeServer = https.createServer(tlsOptions, app);
+    activeServer = https.createServer({ ...HTTP_SERVER_OPTIONS, ...tlsOptions }, app);
     activeServer.on('upgrade', handleUpgrade);
     configureServer(activeServer);
 
     if (shouldRedirectHttp) {
-      redirectServer = http.createServer((req, res) => {
+      redirectServer = http.createServer({ noDelay: true }, (req, res) => {
         const host = String(req.headers.host || '').replace(/:\d+$/, `:${httpsPort}`);
         res.writeHead(308, { location: `https://${host}${req.url || '/'}` });
         res.end();
@@ -606,6 +659,7 @@ function configureServer(targetServer) {
   targetServer.requestTimeout = 0;
   targetServer.headersTimeout = 0;
   targetServer.keepAliveTimeout = 0;
+  targetServer.maxRequestsPerSocket = 0;
   targetServer.on('error', error => {
     if (error?.code === 'EADDRINUSE') {
       console.error('CrossLAN failed to start: port is already in use.');
@@ -660,7 +714,10 @@ function getOrCreateRelaySession(transferId, fileName, expectedSize) {
   if (session) return session;
 
   relayBufferPool.register(transferId);
-  const stream = new PassThrough({ highWaterMark: RELAY_HIGH_WATER_BYTES });
+  const stream = new PassThrough({
+    readableHighWaterMark: RELAY_TARGET_BUFFER_BYTES,
+    writableHighWaterMark: HTTP_STREAM_HIGH_WATER_BYTES
+  });
   stream.on('error', () => {});
   session = {
     transferId,
@@ -670,6 +727,7 @@ function getOrCreateRelaySession(transferId, fileName, expectedSize) {
     uploadStarted: false,
     downloadStarted: false,
     uploadComplete: false,
+    downloadComplete: false,
     failed: false,
     cancelled: false,
     bytesUploaded: 0,
@@ -677,6 +735,7 @@ function getOrCreateRelaySession(transferId, fileName, expectedSize) {
     uploadRequest: null,
     downloadRequest: null,
     downloadResponse: null,
+    lastProgressBroadcastAt: 0,
     timer: null,
     createdAt: Date.now()
   };
@@ -689,6 +748,7 @@ function getOrCreateRelaySession(transferId, fileName, expectedSize) {
 function failRelaySession(transferId, reason, cancelled = false) {
   const session = relaySessions.get(transferId);
   if (!session || session.failed) return;
+  completedRelayTransfers.delete(transferId);
   session.failed = true;
   session.cancelled = cancelled;
   clearRelaySessionTimer(session);
@@ -716,6 +776,16 @@ function scheduleRelaySessionCleanup(session, delayMs) {
   session.timer.unref?.();
 }
 
+function scheduleRelaySessionAfterUpload(session) {
+  if (session.downloadComplete) {
+    scheduleRelaySessionCleanup(session, RELAY_COMPLETED_SESSION_GRACE_MS);
+    return;
+  }
+  if (!session.downloadStarted) {
+    scheduleRelaySessionCleanup(session, RELAY_SESSION_TTL_MS);
+  }
+}
+
 function clearRelaySessionTimer(session) {
   if (!session.timer) return;
   clearTimeout(session.timer);
@@ -725,6 +795,7 @@ function clearRelaySessionTimer(session) {
 function markRelayTransferCancelled(transferId) {
   if (!transferId) return;
   pruneCancelledRelayTransfers();
+  completedRelayTransfers.delete(transferId);
   cancelledRelayTransfers.set(transferId, Date.now() + RELAY_CANCEL_TOMBSTONE_TTL_MS);
 }
 
@@ -751,6 +822,44 @@ function rejectCancelledRelayTransfer(transferId, res, extra = {}) {
     cancelled: true,
     message: 'Transfer cancelled.',
     ...extra
+  });
+  return true;
+}
+
+function recordCompletedRelayTransfer(session) {
+  if (!session?.transferId) return;
+  pruneCompletedRelayTransfers();
+  completedRelayTransfers.set(session.transferId, {
+    fileName: session.fileName,
+    expectedSize: session.expectedSize || session.bytesDownloaded,
+    bytesUploaded: session.bytesUploaded,
+    bytesDownloaded: session.bytesDownloaded,
+    expiresAt: Date.now() + RELAY_COMPLETED_TOMBSTONE_TTL_MS
+  });
+}
+
+function getCompletedRelayTransfer(transferId) {
+  const completed = completedRelayTransfers.get(transferId);
+  if (!completed) return null;
+  if (completed.expiresAt > Date.now()) return completed;
+  completedRelayTransfers.delete(transferId);
+  return null;
+}
+
+function pruneCompletedRelayTransfers() {
+  const now = Date.now();
+  for (const [transferId, completed] of completedRelayTransfers) {
+    if (completed.expiresAt <= now) completedRelayTransfers.delete(transferId);
+  }
+}
+
+function rejectCompletedRelayTransfer(transferId, res) {
+  if (!getCompletedRelayTransfer(transferId)) return false;
+  res.setHeader('Cache-Control', 'no-store');
+  res.status(410).json({
+    ok: false,
+    completed: true,
+    message: 'Transfer already completed.'
   });
   return true;
 }
@@ -805,7 +914,9 @@ async function writeRelayRequestToSession(req, session, onProgress) {
     const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
     let offset = 0;
     while (offset < chunk.length) {
-      const bytesReserved = await relayBufferPool.reserve(session.transferId, chunk.length - offset);
+      const requestedBytes = chunk.length - offset;
+      const bytesReserved = relayBufferPool.tryReserve(session.transferId, requestedBytes)
+        || await relayBufferPool.reserve(session.transferId, requestedBytes);
       const nextOffset = offset + bytesReserved;
       relayBufferPool.commit(session.transferId, bytesReserved);
       session.bytesUploaded += bytesReserved;
@@ -824,6 +935,22 @@ async function writeRelayRequestToSession(req, session, onProgress) {
     }
   }
   return requestBytes;
+}
+
+function broadcastRelaySessionProgress(session, force = false) {
+  if (!session || session.failed) return;
+  const now = Date.now();
+  if (!force && now - session.lastProgressBroadcastAt < 500) return;
+  session.lastProgressBroadcastAt = now;
+  broadcastRelayProgress({
+    type: 'relay-transfer-progress',
+    transferId: session.transferId,
+    fileName: session.fileName,
+    bytesTransferred: session.bytesDownloaded,
+    bytesUploaded: session.bytesUploaded,
+    bytesDownloaded: session.bytesDownloaded,
+    totalBytes: session.expectedSize
+  });
 }
 
 function getRelayBufferStateFields(session) {

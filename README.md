@@ -24,7 +24,7 @@ npm run build
 npm start
 ```
 
-Then open `http://<PC-LAN-IP>:8080` on the PC and phone. Both devices must be on the same LAN. During development you can use:
+Then open `http://<PC-LAN-IP>:8765` on the PC and phone. Both devices must be on the same LAN. During development you can use:
 
 ```bash
 npm run dev
@@ -39,10 +39,67 @@ On Windows you can use the helper script:
 Optional parameters:
 
 ```powershell
-.\scripts\start-local.ps1 -Port 8080 -SaveDir "$env:USERPROFILE\Downloads\CrossLAN" -RelayBufferMb 256
+.\scripts\start-local.ps1 -Port 8765 -SaveDir "$env:USERPROFILE\Downloads\CrossLAN" -RelayBufferMb 256
 ```
 
 In local Node deployment, device cards are real browser clients. The browser running on the service host can receive files as a normal device, and large files sent to the service host direct-save card are written to the configured save directory.
+
+### Node Background Startup And Autostart
+
+The normal `start-local.ps1` command builds the frontend and keeps the current PowerShell window in the foreground. For a previously built app, use the hidden background launcher instead:
+
+```powershell
+.\scripts\start-local-background.ps1
+```
+
+This launcher does not rebuild on every start. Build once after code changes with `npm run build`; the background process only runs the Node server. It returns immediately, does not keep the current terminal occupied, and writes logs to:
+
+```text
+logs\crosslan-node.out.log
+logs\crosslan-node.err.log
+```
+
+To build in the hidden worker before starting:
+
+```powershell
+.\scripts\start-local-background.ps1 -Build
+```
+
+You can also double-click the executable Windows launcher. It automatically builds only when `client\dist` does not exist:
+
+```text
+scripts\start-local-background.cmd
+```
+
+Install a Windows logon task for the current user:
+
+```powershell
+.\scripts\install-autostart.ps1 -Build -StartNow
+```
+
+For a one-click installation, double-click:
+
+```text
+scripts\install-autostart.cmd
+```
+
+`-Build` is only needed the first time or after source changes. `-StartNow` starts the task immediately; otherwise it starts after the next Windows logon. The task runs with a hidden PowerShell window and does not require administrator privileges. It uses the current user's default save directory and port `8765` unless parameters are supplied:
+
+```powershell
+.\scripts\install-autostart.ps1 -Port 8765 -SaveDir "$env:USERPROFILE\Downloads\CrossLAN" -RelayBufferMb 256
+```
+
+Remove the logon task with:
+
+```powershell
+.\scripts\uninstall-autostart.ps1
+```
+
+The uninstall launcher is also available as:
+
+```text
+scripts\uninstall-autostart.cmd
+```
 
 ## Docker
 
@@ -56,12 +113,30 @@ On Windows PowerShell:
 .\scripts\start-docker.ps1
 ```
 
-The compose file maps the PC save directory to `~/Downloads/CrossLAN` on Windows-style hosts and `/data/CrossLAN` inside the container. It publishes host port `8080` to the container service. Open `http://<host-LAN-IP>:8080` from other devices on the same LAN.
+The compose file maps the PC save directory to `~/Downloads/CrossLAN` on Windows-style hosts and `/data/CrossLAN` inside the container. It publishes host port `8765` to the container service. Open `http://<host-LAN-IP>:8765` from other devices on the same LAN.
 
 Optional Docker script parameters:
 
 ```powershell
-.\scripts\start-docker.ps1 -Port 8080 -RelayBufferMb 256
+.\scripts\start-docker.ps1 -Port 8765 -RelayBufferMb 256
+```
+
+The Docker helper now starts detached by default, so the terminal is released immediately. Use `-Foreground` when you need live container output while debugging:
+
+```powershell
+.\scripts\start-docker.ps1 -Foreground
+```
+
+For double-click startup, use:
+
+```text
+scripts\start-docker.cmd
+```
+
+To stop the detached service:
+
+```powershell
+docker compose down
 ```
 
 If Docker cannot pull `node:20-alpine`, configure Docker Desktop registry/proxy or build after the network can reach Docker Hub. The app code itself does not require Docker to run; local `npm run build && npm start` is fine.
@@ -75,7 +150,7 @@ docker compose up -d --build
 Docker deployment sets `CROSSLAN_DEPLOYMENT=docker`. In this mode, CrossLAN advertises the Docker service host as one direct-save device card and hides the host browser UI from other devices, so sending to the service host avoids browser/IDM download interception and writes into the mapped save directory. If an old browser-download host card still appears after an update, close old tabs or force refresh the page. On the host PC you can also open:
 
 ```text
-http://<host-LAN-IP>:8080/?serviceHost=1
+http://<host-LAN-IP>:8765/?serviceHost=1
 ```
 
 ## Device Cards
@@ -127,16 +202,18 @@ volumes:
 - Multiple selected files of at most `32 MB` each are packed into uncompressed `.zip` batches of at most `64 MB`, so the receiver confirms once per small batch. Larger files are sent sequentially as original files. CrossLAN does not auto-unzip the batch on the receiver.
 
 The large-file HTTP paths stream data and do not intentionally buffer the whole file in frontend memory.
-For PC-to-phone browser downloads, the sender's upload speed is naturally back-pressured by the phone download speed. Relay uses explicit high/low-water flow control: each session normally targets `32` MB, pauses at `64` MB, and resumes after draining to `24` MB. All active Relay sessions share a `256` MB memory budget, so several slow receivers cannot each allocate an independent 256 MB buffer.
+For PC-to-phone browser downloads, unrestricted Relay uploads use one continuous XHR request. Node stream backpressure normally keeps the in-memory backlog near the `32` MB target, while explicit high/low-water limits remain the hard safety boundary: a session pauses at `64` MB and resumes after draining to `24` MB. All active Relay sessions share a `256` MB memory budget, so several slow receivers cannot each allocate an independent 256 MB buffer.
+The Relay state endpoint is used for foreground recovery after a browser tab resumes; it is not polled in the normal transfer hot path.
 
 Relay memory settings:
 
 - `CROSSLAN_RELAY_TOTAL_BUFFER_MB`: total budget shared by all active Relay sessions; default `256`.
 - `CROSSLAN_RELAY_BUFFER_MB`: backward-compatible alias for the total budget.
-- `CROSSLAN_RELAY_TARGET_MB`: normal backlog target exposed to paced clients; default `32`.
+- `CROSSLAN_RELAY_TARGET_MB`: normal Node stream backlog target; default `32`.
 - `CROSSLAN_RELAY_HIGH_WATER_MB`: per-session pause threshold; default `64`.
 - `CROSSLAN_RELAY_LOW_WATER_MB`: per-session resume threshold; default `24`.
 - `CROSSLAN_RELAY_CANCEL_TOMBSTONE_TTL_MS`: how long a cancelled Relay ID remains blocked; default `1800000` ms (30 minutes).
+- `CROSSLAN_RELAY_COMPLETED_TOMBSTONE_TTL_MS`: how long completed Relay state remains available for browser foreground recovery; default `1800000` ms (30 minutes).
 
 The limits are clamped to `low <= target <= high <= total`. `-RelayBufferMb` in the PowerShell helpers configures the shared total budget.
 The old relay temporary disk cache path is not used for large browser-download relay transfers.
@@ -194,6 +271,7 @@ Before publishing:
 ```bash
 npm run check
 npm run build
+npm --workspace server run test:relay-http
 ```
 
 ## Architecture
@@ -205,6 +283,7 @@ npm run build
 - `server/src/index.js`: static app server, storage API, large-file direct/relay HTTP streaming, optional HTTPS.
 - `server/src/relay/RelayBufferPool.js`: per-session watermarks and the shared Relay memory budget.
 - `server/test/RelayBufferPool.test.js`: focused capacity, backpressure, fairness, and cancellation tests for Relay buffering.
+- `server/test/RelayHttpSmoke.js`: real HTTP Relay and direct-save streaming smoke test.
 - `server/src/discovery/MdnsDiscovery.js`: Bonjour/mDNS advertisement hooks.
 - `server/src/network/NetworkProber.js`: reserved network diagnostics API.
 

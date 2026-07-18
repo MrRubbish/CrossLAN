@@ -1,11 +1,12 @@
 import os from 'node:os';
 import { nanoid } from 'nanoid';
 
-const SIGNAL_TYPES = new Set(['offer', 'answer', 'ice-candidate', 'transfer-accept', 'transfer-reject', 'direct-transfer-request', 'direct-transfer-accept', 'direct-transfer-reject', 'relay-transfer-request', 'relay-transfer-accept', 'relay-transfer-reject', 'relay-transfer-progress', 'relay-transfer-ready', 'relay-transfer-error', 'transfer-cancel']);
+const SIGNAL_TYPES = new Set(['offer', 'answer', 'ice-candidate', 'transfer-accept', 'transfer-reject', 'batch-transfer-request', 'batch-transfer-accept', 'batch-transfer-reject', 'direct-transfer-request', 'direct-transfer-accept', 'direct-transfer-reject', 'relay-transfer-request', 'relay-transfer-accept', 'relay-transfer-reject', 'relay-transfer-progress', 'relay-transfer-ready', 'relay-transfer-error', 'transfer-cancel']);
 const REQUEST_TYPES = new Set(['transfer-accept', 'direct-transfer-request', 'relay-transfer-request', 'offer']);
 const RESPONSE_TYPES = new Set(['transfer-accept', 'transfer-reject', 'direct-transfer-accept', 'direct-transfer-reject', 'relay-transfer-accept', 'relay-transfer-reject', 'answer']);
 const RECEIVER_FOLLOWUP_TYPES = new Set(['relay-transfer-progress', 'relay-transfer-ready', 'relay-transfer-error']);
 const ROUTE_TTL_MS = 30 * 60 * 1000;
+const SERVICE_HOST_DEVICE_ID = 'crosslan-service-host';
 
 export class SignalingHub {
   constructor({ wss, mdns, networkProber, deploymentMode = 'node', serverInstanceId = '' }) {
@@ -131,6 +132,21 @@ export class SignalingHub {
 
     const targets = this.resolveTargets(sender, message, transferId);
     if (!targets.length) {
+      if (this.isServiceHostDirectRequest(message)) {
+        const route = this.transferRoutes.get(transferId);
+        if (route) {
+          route.receiverId = SERVICE_HOST_DEVICE_ID;
+          route.updatedAt = Date.now();
+        }
+        this.send(sender.socket, {
+          type: 'direct-transfer-accept',
+          from: SERVICE_HOST_DEVICE_ID,
+          to: sender.id,
+          transferId
+        });
+        console.log('CrossLAN signal service host direct auto-accepted: from=' + sender.id + ' conn=' + sender.connectionId + ' transferId=' + transferId);
+        return;
+      }
       console.warn('CrossLAN signal peer unavailable: type=' + message.type + ' from=' + sender.id + ' to=' + message.to + ' transferId=' + transferId);
       this.send(sender.socket, { type: 'peer-unavailable', to: message.to });
       return;
@@ -160,6 +176,13 @@ export class SignalingHub {
   resolveTargets(sender, message, transferId) {
     const route = transferId ? this.transferRoutes.get(transferId) : null;
 
+    if (this.isServiceHostDirectRequest(message)) {
+      return [...this.clients.values()]
+        .filter(client => client.connectionId !== sender.connectionId && client.hostUi && client.canDirectSave && isOpenClient(client))
+        .sort((a, b) => b.lastSeen - a.lastSeen)
+        .slice(0, 1);
+    }
+
     if (route && message.type === 'transfer-cancel') {
       const requester = this.clients.get(route.requesterConnectionId);
       const receiver = route.receiverConnectionId ? this.clients.get(route.receiverConnectionId) : null;
@@ -180,6 +203,12 @@ export class SignalingHub {
     }
 
     return this.getTargetsForDevice(message.to, sender.connectionId);
+  }
+
+  isServiceHostDirectRequest(message) {
+    return this.deploymentMode === 'docker' &&
+      message.type === 'direct-transfer-request' &&
+      String(message.to || '') === SERVICE_HOST_DEVICE_ID;
   }
 
   getTargetsForDevice(deviceId, excludeConnectionId = '') {
@@ -269,7 +298,7 @@ export class SignalingHub {
 }
 
 function getTransferId(message) {
-  return message.transferId || message.fileMeta?.transferId || '';
+  return message.transferId || message.fileMeta?.transferId || message.batchId || '';
 }
 
 function isOpenClient(client) {

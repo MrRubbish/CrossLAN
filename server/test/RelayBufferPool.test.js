@@ -41,6 +41,21 @@ test('a session pauses at high water and resumes only at low water', async () =>
   pool.rollback('one', 1);
 });
 
+test('the hot path reserves available capacity synchronously', () => {
+  const pool = createPool();
+  pool.register('one');
+
+  assert.equal(pool.tryReserve('one', 48), 48);
+  pool.commit('one', 48);
+  assert.equal(pool.tryReserve('one', 32), 16);
+  pool.commit('one', 16);
+  assert.equal(pool.tryReserve('one', 1), 0);
+
+  pool.release('one', 40);
+  assert.equal(pool.tryReserve('one', 8), 8);
+  pool.rollback('one', 8);
+});
+
 test('concurrent sessions stay within the global memory budget', async () => {
   const pool = new RelayBufferPool({
     targetBytes: 30,
@@ -93,6 +108,28 @@ test('woken writers reserve global capacity atomically', async () => {
   assert.equal(await remainsPending(loser), true);
   pool.close(winner.id);
   assert.equal(await loser, 1);
+});
+
+test('one large release wakes every writer that can use the freed capacity', async () => {
+  const pool = new RelayBufferPool({
+    targetBytes: 8,
+    highWaterBytes: 16,
+    lowWaterBytes: 4,
+    totalBytes: 16
+  });
+  pool.register('source');
+  pool.register('two');
+  pool.register('three');
+  const filled = await pool.reserve('source', 16);
+  pool.commit('source', filled);
+  const second = pool.reserve('two', 4);
+  const third = pool.reserve('three', 4);
+
+  pool.release('source', 8);
+
+  assert.equal(await second, 4);
+  assert.equal(await third, 4);
+  assert.equal(pool.totalBufferedBytes, 16);
 });
 
 test('cancelling a paused session rejects its waiting writer and releases memory', async () => {

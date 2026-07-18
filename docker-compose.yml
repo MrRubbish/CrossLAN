@@ -2,11 +2,11 @@ services:
   crosslan:
     build: .
     ports:
-      - "${PORT:-8080}:8080"
+      - "${PORT:-8765}:${PORT:-8765}"
     environment:
       NODE_ENV: production
       CROSSLAN_DEPLOYMENT: docker
-      PORT: 8080
+      PORT: ${PORT:-8765}
       MDNS_SERVICE_NAME: CrossLAN
       CROSSLAN_SAVE_DIR: /data/CrossLAN
       CROSSLAN_CONFIG: /config/crosslan.json
