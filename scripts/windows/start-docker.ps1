@@ -1,6 +1,7 @@
 param(
   [int]$Port = 6100,
   [int]$RelayBufferMb = 256,
+  [string]$SaveDir = '',
   [string]$AdvertisedIp = '',
   [switch]$Foreground
 )
@@ -16,9 +17,16 @@ if ($Port -eq 6000) {
   Write-Warning 'Chromium-based browsers block port 6000; use 6100 or another safe port.'
 }
 
+if ([string]::IsNullOrWhiteSpace($SaveDir)) {
+  $SaveDir = Join-Path ([Environment]::GetFolderPath('UserProfile')) 'Downloads\CrossLAN'
+}
+$SaveDir = [System.IO.Path]::GetFullPath($SaveDir)
+[System.IO.Directory]::CreateDirectory($SaveDir) | Out-Null
+
 $env:PORT = [string]$Port
 $env:CROSSLAN_RELAY_BUFFER_MB = [string]$RelayBufferMb
 $env:CROSSLAN_ADVERTISED_IP = $AdvertisedIp
+$env:CROSSLAN_HOST_SAVE_DIR = $SaveDir
 
 if ($Foreground) {
   docker compose up --build
@@ -31,5 +39,6 @@ if ($Foreground) {
   } else {
     Write-Host "Advertised service IP: derived from the URL; set -AdvertisedIp when opening localhost or using multiple adapters."
   }
+  Write-Host "Direct-save directory: $SaveDir"
   Write-Host 'View logs with: docker compose logs -f crosslan'
 }

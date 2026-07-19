@@ -792,29 +792,30 @@ async function sendSelectedFiles(target: DeviceRecord, files: File[]) {
 }
 
 async function sendSelectedFile(target: DeviceRecord, file: File, batchMeta?: TransferBatchMeta) {
+  const transferMeta = createTransferMetadata(file, batchMeta);
   addLog('file selected', {
     target: target.id,
     targetIp: target.ip,
     targetUa: target.userAgent,
     file: file.name,
     size: file.size,
-    batchId: batchMeta?.batchId,
-    batchIndex: batchMeta?.batchIndex,
-    batchTotal: batchMeta?.batchTotal,
+    batchId: transferMeta?.batchId,
+    batchIndex: transferMeta?.batchIndex,
+    batchTotal: transferMeta?.batchTotal,
     direct: shouldDirectSave(target, file),
     relay: shouldRelayToBrowserDownload(target, file)
   });
   enableWakeLock();
   if (shouldDirectSave(target, file)) {
-    await sendDirectToServer(target, file, batchMeta);
+    await sendDirectToServer(target, file, transferMeta);
     return;
   }
   if (shouldRelayToBrowserDownload(target, file)) {
-    await sendRelayToBrowserDownload(target, file, batchMeta);
+    await sendRelayToBrowserDownload(target, file, transferMeta);
     return;
   }
   try {
-    await engine.sendFile(target.id, file, batchMeta);
+    await engine.sendFile(target.id, file, transferMeta);
   } catch (error) {
     addLog('p2p transfer failed', {
       target: target.id,
@@ -1277,6 +1278,12 @@ function createSpeedSampleState(item: TransferProgress, current: TransferProgres
 function appendSpeedSamplePoint(state: SpeedSampleState, at: number, bytes: number) {
   const last = state.points[state.points.length - 1];
   const safeBytes = Math.max(bytes, last?.bytes || 0);
+  if (state.points.length === 1 && last?.bytes === 0 && safeBytes > 0) {
+    // Do not let receiver confirmation and WebRTC/HTTP setup dilute the
+    // short-window transfer speed once payload bytes actually start moving.
+    state.points[0] = { at, bytes: safeBytes };
+    return;
+  }
   if (!last) {
     state.points.push({ at, bytes: safeBytes });
   } else if (at - last.at < SPEED_SAMPLE_MIN_INTERVAL_MS) {
@@ -1709,20 +1716,25 @@ function clearTransferBookkeeping(transferId: string) {
 }
 
 function createFileMeta(transferId: string, file: File, batchMeta?: TransferBatchMeta): FileMeta {
-  const meta: FileMeta = {
+  return {
     transferId,
     name: file.name,
     size: file.size,
     type: file.type || 'application/octet-stream',
     lastModified: file.lastModified,
-    ...batchMeta
+    ...createTransferMetadata(file, batchMeta)
   };
+}
+
+function createTransferMetadata(file: File, batchMeta?: TransferBatchMeta): TransferBatchMeta | undefined {
   const batchCount = getBatchFileCount(file);
-  if (batchCount > 0) {
-    meta.packageType = 'crosslan-zip';
-    meta.packageCount = batchCount;
-  }
-  return meta;
+  if (!batchMeta && batchCount <= 0) return undefined;
+  return {
+    ...batchMeta,
+    ...(batchCount > 0
+      ? { packageType: 'crosslan-zip' as const, packageCount: batchCount }
+      : {})
+  };
 }
 
 type BatchZipFile = File & { __crosslanPackageType?: 'crosslan-zip'; __crosslanPackageCount?: number };

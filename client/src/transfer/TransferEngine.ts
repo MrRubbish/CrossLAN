@@ -3,7 +3,9 @@ import type { SignalingClient } from '../signaling/SignalingClient';
 
 const CHUNK_SIZE = 256 * 1024;
 const BACKPRESSURE_HIGH_WATER = 16 * 1024 * 1024;
-const BACKPRESSURE_LOW_WATER = 4 * 1024 * 1024;
+const BACKPRESSURE_LOW_WATER = 8 * 1024 * 1024;
+const BATCH_BACKPRESSURE_HIGH_WATER = 32 * 1024 * 1024;
+const BATCH_BACKPRESSURE_LOW_WATER = 16 * 1024 * 1024;
 const BACKPRESSURE_POLL_MS = 10;
 const PROGRESS_INTERVAL_MS = 150;
 const RECEIVER_ACK_TIMEOUT_MS = 30000;
@@ -367,7 +369,6 @@ export class TransferEngine {
 
   private bindSenderChannel(peerId: string, session: PeerSession, channel: RTCDataChannel) {
     channel.binaryType = 'arraybuffer';
-    channel.bufferedAmountLowThreshold = BACKPRESSURE_LOW_WATER;
     channel.onclose = () => {
       this.emitDebug('p2p sender channel closed', { peerId, transferId: session.fileMeta?.transferId }, 'warn');
       if (!session.transferSettled && this.sessions.get(peerId) === session) {
@@ -514,14 +515,16 @@ export class TransferEngine {
   }
 
   private async streamFile(peerId: string, session: PeerSession, channel: RTCDataChannel, file: File, meta: FileMeta) {
+    const backpressure = getBackpressureProfile(meta);
+    channel.bufferedAmountLowThreshold = backpressure.lowWater;
     this.emitDebug('p2p stream start', {
       peerId,
       transferId: meta.transferId,
       fileName: meta.name,
       size: meta.size,
       chunkSize: CHUNK_SIZE,
-      highWater: BACKPRESSURE_HIGH_WATER,
-      lowWater: BACKPRESSURE_LOW_WATER
+      highWater: backpressure.highWater,
+      lowWater: backpressure.lowWater
     });
     this.sendControl(channel, { type: 'meta', meta });
     session.bytesQueued = 0;
@@ -540,22 +543,28 @@ export class TransferEngine {
       peerId
     });
     let offset = 0;
+    let pendingRead = file.size > 0
+      ? file.slice(0, Math.min(CHUNK_SIZE, file.size)).arrayBuffer()
+      : null;
 
     while (offset < file.size && channel.readyState === 'open') {
-      await this.waitForBackpressure(channel, BACKPRESSURE_HIGH_WATER);
-      const end = Math.min(offset + CHUNK_SIZE, file.size);
-      await this.applyManualThrottle(end - offset);
-      const buffer = await file.slice(offset, end).arrayBuffer();
+      const buffer = await pendingRead!;
+      const end = offset + buffer.byteLength;
+      pendingRead = end < file.size
+        ? file.slice(end, Math.min(end + CHUNK_SIZE, file.size)).arrayBuffer()
+        : null;
+      await this.waitForBackpressure(channel, backpressure.highWater, backpressure.lowWater);
+      await this.applyManualThrottle(buffer.byteLength);
       this.sendBinary(channel, buffer);
-      offset += buffer.byteLength;
+      offset = end;
       session.bytesQueued = offset;
     }
 
     this.emitDebug('p2p stream bytes sent', { peerId, transferId: meta.transferId, offset, size: file.size });
     const receiverSaved = this.waitForReceiverSaved(session);
-    await this.waitForBackpressure(channel, 1);
+    await this.waitForBackpressure(channel, 1, 0);
     this.sendControl(channel, { type: 'done', transferId: meta.transferId });
-    await this.waitForBackpressure(channel, 1);
+    await this.waitForBackpressure(channel, 1, 0);
     await receiverSaved;
     this.emitDebug('p2p receiver save ack received', { peerId, transferId: meta.transferId });
 
@@ -612,12 +621,14 @@ export class TransferEngine {
     return { mode: 'blob', meta, bytes: 0, chunks: [], lastAckAt: 0, lastAckBytes: 0 };
   }
 
-  private async writeChunk(state: ReceiveState, chunk: Uint8Array) {
+  private async writeChunk(state: ReceiveState, chunk: Uint8Array<ArrayBuffer>) {
     if (state.mode === 'stream') {
       await state.writer.write(chunk);
       return;
     }
-    state.chunks.push(chunk.slice());
+    // The DataChannel ArrayBuffer is already owned by this message. Retaining
+    // its view avoids a second full payload copy on memory-constrained phones.
+    state.chunks.push(chunk.buffer);
   }
 
   private async finishReceive(peerId: string, state: ReceiveState, channel: RTCDataChannel) {
@@ -685,11 +696,12 @@ export class TransferEngine {
     this.ensureChannelOpen(channel);
     channel.send(payload);
   }
-  private async waitForBackpressure(channel: RTCDataChannel, maxBufferedAmount: number) {
-    if (channel.bufferedAmount < maxBufferedAmount) return;
+  private async waitForBackpressure(channel: RTCDataChannel, highWater: number, lowWater: number) {
+    if (channel.bufferedAmount < highWater) return;
+    channel.bufferedAmountLowThreshold = lowWater;
     await new Promise<void>(resolve => {
       const done = () => {
-        if (channel.bufferedAmount < maxBufferedAmount || channel.readyState !== 'open') {
+        if (channel.bufferedAmount <= lowWater || channel.readyState !== 'open') {
           channel.removeEventListener('bufferedamountlow', done);
           window.clearInterval(timer);
           resolve();
@@ -837,6 +849,19 @@ function isMatchingFileMeta(expected: FileMeta | undefined, actual: unknown): ac
     meta.size === expected.size &&
     meta.type === expected.type &&
     meta.lastModified === expected.lastModified;
+}
+
+function getBackpressureProfile(meta: FileMeta) {
+  if (meta.packageType === 'crosslan-zip') {
+    return {
+      highWater: BATCH_BACKPRESSURE_HIGH_WATER,
+      lowWater: BATCH_BACKPRESSURE_LOW_WATER
+    };
+  }
+  return {
+    highWater: BACKPRESSURE_HIGH_WATER,
+    lowWater: BACKPRESSURE_LOW_WATER
+  };
 }
 
 function createTransferId() {

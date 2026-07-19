@@ -6,3 +6,5 @@ client/dist/
 .selftest-*.log
 .env
 .git-broken/
+/docker-data/
+/local-docs/

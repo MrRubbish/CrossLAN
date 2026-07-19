@@ -77,6 +77,86 @@ test('outgoing WebRTC offers preserve batch metadata for mixed-size selections',
   await transfer;
 });
 
+test('packaged WebRTC batches use the larger sender buffer profile', async () => {
+  installBrowserGlobals();
+  FakePeerConnection.reset();
+  const signaling = createSignaling();
+  const engine = new TransferEngine(signaling, () => 'sender');
+  const debug = [];
+  engine.onDebug((message, details) => debug.push({ message, details }));
+
+  const transfer = engine.sendFile('receiver', createFile('CrossLAN-batch.zip', 768 * 1024), {
+    batchId: 'batch-buffer-profile',
+    batchIndex: 0,
+    batchTotal: 1,
+    packageType: 'crosslan-zip',
+    packageCount: 12
+  });
+
+  await waitFor(() => FakePeerConnection.instances.length === 1);
+  FakePeerConnection.instances[0].dataChannel.open();
+  await transfer;
+
+  const start = debug.find(item => item.message === 'p2p stream start');
+  assert.equal(start?.details?.highWater, 32 * 1024 * 1024);
+  assert.equal(start?.details?.lowWater, 16 * 1024 * 1024);
+  assert.equal(messagesOfType(signaling, 'offer')[0].fileMeta.packageType, 'crosslan-zip');
+  assert.equal(messagesOfType(signaling, 'offer')[0].fileMeta.packageCount, 12);
+});
+
+test('WebRTC backpressure resumes only after the sender buffer reaches low water', async () => {
+  installBrowserGlobals();
+  const engine = new TransferEngine(createSignaling(), () => 'sender');
+  const channel = new FakeDataChannel();
+  channel.readyState = 'open';
+  channel.bufferedAmount = 32;
+  let released = false;
+
+  const waiting = engine.waitForBackpressure(channel, 32, 16).then(() => {
+    released = true;
+  });
+
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(channel.bufferedAmountLowThreshold, 16);
+  assert.equal(released, false);
+
+  channel.bufferedAmount = 17;
+  channel.emit('bufferedamountlow');
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(released, false);
+
+  channel.bufferedAmount = 16;
+  channel.emit('bufferedamountlow');
+  await waiting;
+  assert.equal(released, true);
+  assert.equal(channel.listeners.get('bufferedamountlow')?.size || 0, 0);
+});
+
+test('blob fallback retains WebRTC chunks without copying each payload', async () => {
+  installBrowserGlobals();
+  const engine = new TransferEngine(createSignaling(), () => 'receiver');
+  const state = {
+    mode: 'blob',
+    meta: {
+      transferId: 'blob-zero-copy',
+      name: 'batch.zip',
+      size: 4,
+      type: 'application/zip',
+      lastModified: 1
+    },
+    bytes: 0,
+    chunks: [],
+    lastAckAt: 0,
+    lastAckBytes: 0
+  };
+  const chunk = new Uint8Array([1, 2, 3, 4]);
+
+  await engine.writeChunk(state, chunk);
+
+  assert.equal(state.chunks.length, 1);
+  assert.equal(state.chunks[0], chunk.buffer);
+});
+
 test('ICE candidates received before an offer are applied after remote description', async () => {
   installBrowserGlobals();
   FakePeerConnection.reset();
@@ -290,6 +370,10 @@ class FakeDataChannel {
 
   removeEventListener(type, listener) {
     this.listeners.get(type)?.delete(listener);
+  }
+
+  emit(type) {
+    for (const listener of this.listeners.get(type) || []) listener();
   }
 
   send(payload) {

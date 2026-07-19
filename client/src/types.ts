@@ -89,7 +89,10 @@ export interface FileMeta {
   batchTotal?: number;
 }
 
-export type TransferBatchMeta = Pick<FileMeta, 'batchId' | 'batchIndex' | 'batchTotal'>;
+export type TransferBatchMeta = Pick<
+  FileMeta,
+  'batchId' | 'batchIndex' | 'batchTotal' | 'packageType' | 'packageCount'
+>;
 
 export interface BatchTransferSummary {
   batchId: string;
