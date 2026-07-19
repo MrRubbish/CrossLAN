@@ -15,9 +15,10 @@ import { SignalingHub } from './signaling/SignalingHub.js';
 import { MdnsDiscovery } from './discovery/MdnsDiscovery.js';
 import { NetworkProber } from './network/NetworkProber.js';
 import { RelayBufferPool } from './relay/RelayBufferPool.js';
+import { Logger } from './Logger.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const port = Number(process.env.PORT || 8765);
+const port = Number(process.env.PORT || 6100);
 const httpsPort = Number(process.env.HTTPS_PORT || 8443);
 const httpsKeyPath = process.env.CROSSLAN_HTTPS_KEY || '';
 const httpsCertPath = process.env.CROSSLAN_HTTPS_CERT || '';
@@ -47,6 +48,7 @@ const HTTP_SERVER_OPTIONS = {
 };
 const app = express();
 const server = createServer(HTTP_SERVER_OPTIONS, app);
+const logger = new Logger();
 let activeServer = server;
 let redirectServer = null;
 const wss = new WebSocketServer({ noServer: true });
@@ -64,7 +66,8 @@ const directUploads = new Map();
 const directChunkSessions = new Map();
 const mdns = new MdnsDiscovery({
   port,
-  serviceName: process.env.MDNS_SERVICE_NAME || 'CrossLAN'
+  serviceName: process.env.MDNS_SERVICE_NAME || 'CrossLAN',
+  logger
 });
 
 app.disable('x-powered-by');
@@ -152,7 +155,7 @@ app.post('/api/transfers/direct', async (req, res) => {
       cancelNotified: false
     };
     if (transferId) directUploads.set(transferId, uploadSession);
-    console.log('CrossLAN direct upload started: ' + fileName + ' -> ' + targetPath + ' (' + formatBytes(expectedSize) + ')');
+    logger.info('CrossLAN direct upload started: ' + fileName + ' -> ' + targetPath + ' (' + formatBytes(expectedSize) + ')');
 
     req.on('data', chunk => {
       bytesWritten += chunk.length;
@@ -163,7 +166,7 @@ app.post('/api/transfers/direct', async (req, res) => {
         const intervalSeconds = (now - lastLogAt) / 1000;
         lastLogAt = now;
         lastLoggedBytes = bytesWritten;
-        console.log('CrossLAN direct upload progress: ' + fileName + ' ' + formatBytes(bytesWritten) + ' / ' + formatBytes(expectedSize) + ' @ ' + formatBytes(intervalBytes / intervalSeconds) + '/s avg ' + formatBytes(bytesWritten / ((now - startedAt) / 1000)) + '/s');
+        logger.debug('CrossLAN direct upload progress: ' + fileName + ' ' + formatBytes(bytesWritten) + ' / ' + formatBytes(expectedSize) + ' @ ' + formatBytes(intervalBytes / intervalSeconds) + '/s avg ' + formatBytes(bytesWritten / ((now - startedAt) / 1000)) + '/s');
       }
       if (now - lastBroadcastAt > 500) {
         lastBroadcastAt = now;
@@ -180,14 +183,15 @@ app.post('/api/transfers/direct', async (req, res) => {
     }
 
     const elapsedSeconds = Math.max((Date.now() - startedAt) / 1000, 0.001);
-    console.log('CrossLAN direct upload completed: ' + path.basename(targetPath) + ' (' + formatBytes(bytesWritten) + ', avg ' + formatBytes(bytesWritten / elapsedSeconds) + '/s)');
+    logger.info('CrossLAN direct upload completed: ' + path.basename(targetPath) + ' (' + formatBytes(bytesWritten) + ', avg ' + formatBytes(bytesWritten / elapsedSeconds) + '/s)');
     broadcastDirectProgress({ type: 'direct-transfer-complete', transferId, fileName: path.basename(targetPath), bytesTransferred: bytesWritten, totalBytes: expectedSize || bytesWritten, path: targetPath });
     res.json({ ok: true, fileName: path.basename(targetPath), path: targetPath, bytesWritten });
   } catch (error) {
     const cancelled = Boolean(uploadSession?.cancelled);
     const message = cancelled ? 'Transfer cancelled.' : error instanceof Error ? error.message : 'Upload failed.';
-    const log = cancelled ? console.warn : console.error;
-    log('CrossLAN direct upload ' + (cancelled ? 'cancelled: ' : 'failed: ') + message);
+    const logMessage = 'CrossLAN direct upload ' + (cancelled ? 'cancelled: ' : 'failed: ') + message;
+    if (cancelled) logger.warn(logMessage);
+    else logger.error(logMessage);
     if (!uploadSession?.cancelNotified) {
       broadcastDirectProgress({ type: 'direct-transfer-error', transferId, fileName: targetPath ? path.basename(targetPath) : undefined, message, cancelled });
     }
@@ -235,7 +239,7 @@ app.post('/api/transfers/direct/:transferId/chunk', async (req, res) => {
         session.error = error;
       });
       directChunkSessions.set(transferId, session);
-      console.log('CrossLAN direct chunk upload started: ' + fileName + ' -> ' + targetPath + ' (' + formatBytes(expectedSize) + ')');
+      logger.info('CrossLAN direct chunk upload started: ' + fileName + ' -> ' + targetPath + ' (' + formatBytes(expectedSize) + ')');
     }
 
     if (session.bytesWritten !== offset) {
@@ -265,7 +269,7 @@ app.post('/api/transfers/direct/:transferId/chunk', async (req, res) => {
         return;
       }
       const elapsedSeconds = Math.max((Date.now() - session.startedAt) / 1000, 0.001);
-      console.log('CrossLAN direct chunk upload completed: ' + path.basename(session.targetPath) + ' (' + formatBytes(session.bytesWritten) + ', avg ' + formatBytes(session.bytesWritten / elapsedSeconds) + '/s)');
+      logger.info('CrossLAN direct chunk upload completed: ' + path.basename(session.targetPath) + ' (' + formatBytes(session.bytesWritten) + ', avg ' + formatBytes(session.bytesWritten / elapsedSeconds) + '/s)');
       broadcastDirectProgress({ type: 'direct-transfer-complete', transferId, fileName: path.basename(session.targetPath), bytesTransferred: session.bytesWritten, totalBytes: session.expectedSize || session.bytesWritten, path: session.targetPath });
       directChunkSessions.delete(transferId);
       res.json({ ok: true, fileName: path.basename(session.targetPath), path: session.targetPath, bytesWritten: session.bytesWritten });
@@ -277,8 +281,9 @@ app.post('/api/transfers/direct/:transferId/chunk', async (req, res) => {
     if (session?.request === req) session.request = null;
     const cancelled = Boolean(session?.cancelled);
     const message = cancelled ? 'Transfer cancelled.' : error instanceof Error ? error.message : 'Upload failed.';
-    const log = cancelled ? console.warn : console.error;
-    log('CrossLAN direct chunk upload ' + (cancelled ? 'cancelled: ' : 'failed: ') + 'transferId=' + transferId + ' ' + message);
+    const logMessage = 'CrossLAN direct chunk upload ' + (cancelled ? 'cancelled: ' : 'failed: ') + 'transferId=' + transferId + ' ' + message;
+    if (cancelled) logger.warn(logMessage);
+    else logger.error(logMessage);
     if (session) {
       session.stream.destroy();
       await fs.rm(session.targetPath, { force: true }).catch(() => {});
@@ -325,7 +330,7 @@ app.post('/api/transfers/relay/:transferId', async (req, res) => {
   session.fileName = fileName;
   session.expectedSize = expectedSize;
   clearRelaySessionTimer(session);
-  console.log('CrossLAN relay stream upload started: ' + fileName + ' transferId=' + transferId + ' size=' + formatBytes(expectedSize));
+  logger.info('CrossLAN relay stream upload started: ' + fileName + ' transferId=' + transferId + ' size=' + formatBytes(expectedSize));
   const reportUploadProgress = uploaded => {
     bytesWritten = uploaded;
     const now = Date.now();
@@ -335,15 +340,15 @@ app.post('/api/transfers/relay/:transferId', async (req, res) => {
       const elapsedSeconds = Math.max((now - startedAt) / 1000, 0.001);
       lastLogAt = now;
       lastLoggedBytes = bytesWritten;
-      console.log('CrossLAN relay stream upload progress: ' + fileName + ' transferId=' + transferId + ' ' + formatBytes(bytesWritten) + ' / ' + formatBytes(expectedSize) + ' @ ' + formatBytes(intervalBytes / intervalSeconds) + '/s avg ' + formatBytes(bytesWritten / elapsedSeconds) + '/s');
+      logger.debug('CrossLAN relay stream upload progress: ' + fileName + ' transferId=' + transferId + ' ' + formatBytes(bytesWritten) + ' / ' + formatBytes(expectedSize) + ' @ ' + formatBytes(intervalBytes / intervalSeconds) + '/s avg ' + formatBytes(bytesWritten / elapsedSeconds) + '/s');
     }
   };
   req.on('aborted', () => {
-    console.warn('CrossLAN relay stream upload aborted: ' + fileName + ' transferId=' + transferId + ' written=' + formatBytes(bytesWritten));
+    logger.warn('CrossLAN relay stream upload aborted: ' + fileName + ' transferId=' + transferId + ' written=' + formatBytes(bytesWritten));
     failRelaySession(transferId, 'Sender aborted upload.');
   });
   req.on('error', error => {
-    console.warn('CrossLAN relay stream request error: ' + fileName + ' transferId=' + transferId + ' ' + (error instanceof Error ? error.message : error));
+    logger.warn('CrossLAN relay stream request error: ' + fileName + ' transferId=' + transferId + ' ' + (error instanceof Error ? error.message : error));
     failRelaySession(transferId, 'Sender upload error.');
   });
 
@@ -359,12 +364,12 @@ app.post('/api/transfers/relay/:transferId', async (req, res) => {
     session.uploadComplete = true;
     broadcastRelaySessionProgress(session, true);
     const elapsedSeconds = Math.max((Date.now() - startedAt) / 1000, 0.001);
-    console.log('CrossLAN relay stream upload completed: ' + fileName + ' transferId=' + transferId + ' bytes=' + formatBytes(bytesWritten) + ' avg=' + formatBytes(bytesWritten / elapsedSeconds) + '/s');
+    logger.info('CrossLAN relay stream upload completed: ' + fileName + ' transferId=' + transferId + ' bytes=' + formatBytes(bytesWritten) + ' avg=' + formatBytes(bytesWritten / elapsedSeconds) + '/s');
     scheduleRelaySessionAfterUpload(session);
     res.json({ ok: true, fileName, bytesWritten });
   } catch (error) {
     if (!session.failed) failRelaySession(transferId, error instanceof Error ? error.message : 'Relay stream upload failed.');
-    console.error('CrossLAN relay stream upload failed: transferId=' + transferId + ' file=' + fileName + ' ' + (error instanceof Error ? error.message : error));
+    logger.error('CrossLAN relay stream upload failed: transferId=' + transferId + ' file=' + fileName + ' ' + (error instanceof Error ? error.message : error));
     if (!res.headersSent && !res.destroyed) res.status(500).json({ ok: false, message: error instanceof Error ? error.message : 'Relay stream upload failed.' });
   } finally {
     if (session.uploadRequest === req) session.uploadRequest = null;
@@ -397,7 +402,7 @@ app.post('/api/transfers/relay/:transferId/chunk', async (req, res) => {
       session.expectedSize = expectedSize;
       session.startedAt = Date.now();
       clearRelaySessionTimer(session);
-      console.log('CrossLAN relay chunk upload started: ' + fileName + ' transferId=' + transferId + ' size=' + formatBytes(expectedSize));
+      logger.info('CrossLAN relay chunk upload started: ' + fileName + ' transferId=' + transferId + ' size=' + formatBytes(expectedSize));
     }
 
     if (session.bytesUploaded !== offset) {
@@ -419,7 +424,7 @@ app.post('/api/transfers/relay/:transferId/chunk', async (req, res) => {
       session.stream.end();
       broadcastRelaySessionProgress(session, true);
       const elapsedSeconds = Math.max((Date.now() - (session.startedAt || Date.now())) / 1000, 0.001);
-      console.log('CrossLAN relay chunk upload completed: ' + fileName + ' transferId=' + transferId + ' bytes=' + formatBytes(session.bytesUploaded) + ' avg=' + formatBytes(session.bytesUploaded / elapsedSeconds) + '/s');
+      logger.info('CrossLAN relay chunk upload completed: ' + fileName + ' transferId=' + transferId + ' bytes=' + formatBytes(session.bytesUploaded) + ' avg=' + formatBytes(session.bytesUploaded / elapsedSeconds) + '/s');
       scheduleRelaySessionAfterUpload(session);
       res.json({ ok: true, fileName, bytesWritten: session.bytesUploaded });
       return;
@@ -428,7 +433,7 @@ app.post('/api/transfers/relay/:transferId/chunk', async (req, res) => {
     res.json({ ok: true, fileName, bytesWritten: session.bytesUploaded, chunkBytes });
   } catch (error) {
     if (!session.failed) failRelaySession(transferId, error instanceof Error ? error.message : 'Relay chunk upload failed.');
-    console.error('CrossLAN relay chunk upload failed: transferId=' + transferId + ' file=' + fileName + ' ' + (error instanceof Error ? error.message : error));
+    logger.error('CrossLAN relay chunk upload failed: transferId=' + transferId + ' file=' + fileName + ' ' + (error instanceof Error ? error.message : error));
     if (!res.headersSent && !res.destroyed) res.status(500).json({ ok: false, message: error instanceof Error ? error.message : 'Relay chunk upload failed.' });
   } finally {
     if (session.uploadRequest === req) session.uploadRequest = null;
@@ -515,7 +520,7 @@ app.get('/api/transfers/relay/:transferId/:fileName', async (req, res) => {
   session.fileName = fileName;
   if (expectedSize > 0) session.expectedSize = expectedSize;
   clearRelaySessionTimer(session);
-  console.log('CrossLAN relay stream download opened: transferId=' + transferId + ' file=' + fileName + ' ip=' + normalizeIp(req.socket.remoteAddress));
+  logger.info('CrossLAN relay stream download opened: transferId=' + transferId + ' file=' + fileName + ' ip=' + normalizeIp(req.socket.remoteAddress));
 
   res.setHeader('Content-Type', 'application/octet-stream');
   res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeRFC5987(fileName)}`);
@@ -538,7 +543,7 @@ app.get('/api/transfers/relay/:transferId/:fileName', async (req, res) => {
   res.on('close', () => {
     if (session.downloadRequest === req) session.downloadRequest = null;
     if (session.downloadResponse === res) session.downloadResponse = null;
-    console.log('CrossLAN relay stream download closed: transferId=' + transferId + ' file=' + fileName + ' downloaded=' + formatBytes(bytesDownloaded) + ' status=' + res.statusCode);
+    logger.debug('CrossLAN relay stream download closed: transferId=' + transferId + ' file=' + fileName + ' downloaded=' + formatBytes(bytesDownloaded) + ' status=' + res.statusCode);
     if (session.failed) return;
     if (!session.downloadComplete && !res.writableFinished) {
       failRelaySession(transferId, 'Receiver closed download.');
@@ -563,11 +568,11 @@ app.get('/api/transfers/relay/:transferId/:fileName', async (req, res) => {
       bytesDownloaded,
       totalBytes: session.expectedSize || bytesDownloaded
     });
-    console.log('CrossLAN relay stream download finished: transferId=' + transferId + ' file=' + fileName + ' bytes=' + formatBytes(bytesDownloaded));
+    logger.info('CrossLAN relay stream download finished: transferId=' + transferId + ' file=' + fileName + ' bytes=' + formatBytes(bytesDownloaded));
     scheduleRelaySessionCleanup(session, RELAY_COMPLETED_SESSION_GRACE_MS);
   } catch (error) {
     if (!session.failed) failRelaySession(transferId, error instanceof Error ? error.message : 'Relay stream download failed.');
-    console.warn('CrossLAN relay stream download failed: transferId=' + transferId + ' file=' + fileName + ' ' + (error instanceof Error ? error.message : error));
+    logger.warn('CrossLAN relay stream download failed: transferId=' + transferId + ' file=' + fileName + ' ' + (error instanceof Error ? error.message : error));
   }
 });
 app.get('/api/network/probe/quick', async (req, res) => {
@@ -599,7 +604,7 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(clientDist, 'index.html'));
 });
 
-const hub = new SignalingHub({ wss, mdns, networkProber, deploymentMode, serverInstanceId });
+const hub = new SignalingHub({ wss, mdns, networkProber, deploymentMode, serverInstanceId, logger });
 server.on('upgrade', handleUpgrade);
 
 try {
@@ -628,7 +633,7 @@ try {
     startServer(server, port, 'HTTP', true);
   }
 } catch (error) {
-  console.error(`CrossLAN failed to configure HTTPS: ${error instanceof Error ? error.message : error}`);
+  logger.error(`CrossLAN failed to configure HTTPS: ${error instanceof Error ? error.message : error}`);
   process.exit(1);
 }
 
@@ -662,9 +667,9 @@ function configureServer(targetServer) {
   targetServer.maxRequestsPerSocket = 0;
   targetServer.on('error', error => {
     if (error?.code === 'EADDRINUSE') {
-      console.error('CrossLAN failed to start: port is already in use.');
+      logger.error('CrossLAN failed to start: port is already in use.');
     } else {
-      console.error(`CrossLAN failed to start: ${error instanceof Error ? error.message : error}`);
+      logger.error(`CrossLAN failed to start: ${error instanceof Error ? error.message : error}`);
     }
     process.exit(1);
   });
@@ -674,14 +679,14 @@ function startServer(targetServer, listenPort, label, startDiscovery) {
   targetServer.listen(listenPort, '0.0.0.0', async () => {
     await loadStorageSettings();
     await ensureWritableDirectory(storageSettings.saveDir).catch(error => {
-      console.warn(`CrossLAN storage warning: ${error instanceof Error ? error.message : error}`);
+      logger.warn(`CrossLAN storage warning: ${error instanceof Error ? error.message : error}`);
     });
     const protocol = label === 'HTTPS' ? 'https' : 'http';
-    console.log(`CrossLAN listening on ${label} ${protocol}://0.0.0.0:${listenPort}`);
-    console.log(`CrossLAN direct-save directory: ${storageSettings.saveDir}`);
+    logger.ready(`CrossLAN listening on ${label} ${protocol}://0.0.0.0:${listenPort}`);
+    logger.info(`CrossLAN direct-save directory: ${storageSettings.saveDir}`);
     if (startDiscovery) {
       mdns.start().catch(error => {
-        console.warn(`CrossLAN discovery warning: ${error instanceof Error ? error.message : error}`);
+        logger.warn(`CrossLAN discovery warning: ${error instanceof Error ? error.message : error}`);
       });
     }
   });
@@ -741,7 +746,7 @@ function getOrCreateRelaySession(transferId, fileName, expectedSize) {
   };
   relaySessions.set(transferId, session);
   scheduleRelaySessionCleanup(session, RELAY_SESSION_TTL_MS);
-  console.log('CrossLAN relay stream session created: transferId=' + transferId + ' file=' + fileName + ' target=' + formatBytes(RELAY_TARGET_BUFFER_BYTES) + ' high=' + formatBytes(RELAY_HIGH_WATER_BYTES) + ' low=' + formatBytes(RELAY_LOW_WATER_BYTES) + ' total=' + formatBytes(RELAY_TOTAL_BUFFER_BYTES));
+  logger.debug('CrossLAN relay stream session created: transferId=' + transferId + ' file=' + fileName + ' target=' + formatBytes(RELAY_TARGET_BUFFER_BYTES) + ' high=' + formatBytes(RELAY_HIGH_WATER_BYTES) + ' low=' + formatBytes(RELAY_LOW_WATER_BYTES) + ' total=' + formatBytes(RELAY_TOTAL_BUFFER_BYTES));
   return session;
 }
 
@@ -754,7 +759,7 @@ function failRelaySession(transferId, reason, cancelled = false) {
   clearRelaySessionTimer(session);
   relaySessions.delete(transferId);
   relayBufferPool.close(transferId, new Error(reason));
-  console.warn('CrossLAN relay stream session failed: transferId=' + transferId + ' reason=' + reason);
+  logger.warn('CrossLAN relay stream session failed: transferId=' + transferId + ' reason=' + reason);
   session.uploadRequest?.destroy();
   session.downloadRequest?.destroy();
   session.downloadResponse?.destroy();
@@ -768,7 +773,7 @@ function failRelaySession(transferId, reason, cancelled = false) {
 function scheduleRelaySessionCleanup(session, delayMs) {
   clearRelaySessionTimer(session);
   session.timer = setTimeout(() => {
-    console.log('CrossLAN relay stream session cleanup: transferId=' + session.transferId + ' uploaded=' + formatBytes(session.bytesUploaded) + ' downloaded=' + formatBytes(session.bytesDownloaded));
+    logger.debug('CrossLAN relay stream session cleanup: transferId=' + session.transferId + ' uploaded=' + formatBytes(session.bytesUploaded) + ' downloaded=' + formatBytes(session.bytesDownloaded));
     session.stream.destroy();
     relaySessions.delete(session.transferId);
     relayBufferPool.close(session.transferId);
@@ -870,7 +875,7 @@ function cleanupDirectUploadSession(transferId, reason) {
   directUploads.delete(transferId);
   session.cancelled = reason === 'cancelled';
   session.cancelNotified = true;
-  console.warn('CrossLAN direct upload cleanup: transferId=' + transferId + ' file=' + session.fileName + ' reason=' + reason + ' written=' + formatBytes(session.bytesWritten));
+  logger.warn('CrossLAN direct upload cleanup: transferId=' + transferId + ' file=' + session.fileName + ' reason=' + reason + ' written=' + formatBytes(session.bytesWritten));
   broadcastDirectProgress({
     type: 'direct-transfer-error',
     transferId,
@@ -888,7 +893,7 @@ async function cleanupDirectChunkSession(transferId, reason) {
   directChunkSessions.delete(transferId);
   session.cancelled = reason === 'cancelled';
   session.cancelNotified = true;
-  console.warn('CrossLAN direct chunk session cleanup: transferId=' + transferId + ' file=' + session.fileName + ' reason=' + reason + ' written=' + formatBytes(session.bytesWritten));
+  logger.warn('CrossLAN direct chunk session cleanup: transferId=' + transferId + ' file=' + session.fileName + ' reason=' + reason + ' written=' + formatBytes(session.bytesWritten));
   broadcastDirectProgress({
     type: 'direct-transfer-error',
     transferId,
@@ -984,7 +989,7 @@ async function loadStorageSettings() {
     }
   } catch (error) {
     if (error?.code !== 'ENOENT') {
-      console.warn(`CrossLAN config warning: ${error instanceof Error ? error.message : error}`);
+      logger.warn(`CrossLAN config warning: ${error instanceof Error ? error.message : error}`);
     }
   }
 }

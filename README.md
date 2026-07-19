@@ -24,7 +24,7 @@ npm run build
 npm start
 ```
 
-Then open `http://<PC-LAN-IP>:8765` on the PC and phone. Both devices must be on the same LAN. During development you can use:
+Then open `http://<PC-LAN-IP>:6100` on the PC and phone. Both devices must be on the same LAN. During development you can use:
 
 ```bash
 npm run dev
@@ -33,13 +33,13 @@ npm run dev
 On Windows you can use the helper script:
 
 ```powershell
-.\scripts\start-local.ps1
+.\scripts\windows\start-local.ps1
 ```
 
 Optional parameters:
 
 ```powershell
-.\scripts\start-local.ps1 -Port 8765 -SaveDir "$env:USERPROFILE\Downloads\CrossLAN" -RelayBufferMb 256
+.\scripts\windows\start-local.ps1 -Port 6100 -SaveDir "$env:USERPROFILE\Downloads\CrossLAN" -RelayBufferMb 256 -AdvertisedIp 192.168.31.9
 ```
 
 In local Node deployment, device cards are real browser clients. The browser running on the service host can receive files as a normal device, and large files sent to the service host direct-save card are written to the configured save directory.
@@ -49,7 +49,7 @@ In local Node deployment, device cards are real browser clients. The browser run
 The normal `start-local.ps1` command builds the frontend and keeps the current PowerShell window in the foreground. For a previously built app, use the hidden background launcher instead:
 
 ```powershell
-.\scripts\start-local-background.ps1
+.\scripts\windows\start-local-background.ps1
 ```
 
 This launcher does not rebuild on every start. Build once after code changes with `npm run build`; the background process only runs the Node server. It returns immediately, does not keep the current terminal occupied, and writes logs to:
@@ -59,47 +59,110 @@ logs\crosslan-node.out.log
 logs\crosslan-node.err.log
 ```
 
+For a regular Node deployment, set `CROSSLAN_LOG_FILE` to write the structured service log directly to a file. When a log file is configured, only errors are recorded by default. Use `CROSSLAN_LOG_LEVEL=warn`, `info`, or `debug` when temporarily diagnosing warnings, transfer lifecycle events, signaling, or progress details.
+
 To build in the hidden worker before starting:
 
 ```powershell
-.\scripts\start-local-background.ps1 -Build
+.\scripts\windows\start-local-background.ps1 -Build
 ```
 
 You can also double-click the executable Windows launcher. It automatically builds only when `client\dist` does not exist:
 
 ```text
-scripts\start-local-background.cmd
+scripts\windows\start-local-background.cmd
 ```
 
 Install a Windows logon task for the current user:
 
 ```powershell
-.\scripts\install-autostart.ps1 -Build -StartNow
+.\scripts\windows\install-autostart.ps1 -Build -StartNow
 ```
 
 For a one-click installation, double-click:
 
 ```text
-scripts\install-autostart.cmd
+scripts\windows\install-autostart.cmd
 ```
 
-`-Build` is only needed the first time or after source changes. `-StartNow` starts the task immediately; otherwise it starts after the next Windows logon. The task runs with a hidden PowerShell window and does not require administrator privileges. It uses the current user's default save directory and port `8765` unless parameters are supplied:
+`-Build` is only needed the first time or after source changes. `-StartNow` starts the task immediately; otherwise it starts after the next Windows logon. The task runs with a hidden PowerShell window and does not require administrator privileges. It uses the current user's default save directory and port `6100` unless parameters are supplied:
 
 ```powershell
-.\scripts\install-autostart.ps1 -Port 8765 -SaveDir "$env:USERPROFILE\Downloads\CrossLAN" -RelayBufferMb 256
+.\scripts\windows\install-autostart.ps1 -Port 6100 -SaveDir "$env:USERPROFILE\Downloads\CrossLAN" -RelayBufferMb 256
 ```
 
 Remove the logon task with:
 
 ```powershell
-.\scripts\uninstall-autostart.ps1
+.\scripts\windows\uninstall-autostart.ps1
 ```
 
 The uninstall launcher is also available as:
 
 ```text
-scripts\uninstall-autostart.cmd
+scripts\windows\uninstall-autostart.cmd
 ```
+
+Stop or restart a background Node service without rebuilding:
+
+```powershell
+.\scripts\windows\stop-local.ps1
+.\scripts\windows\restart-local.ps1 -Port 6100
+```
+
+`start-local-background.cmd`, `stop-local.cmd`, and `restart-local.cmd` are double-click-friendly wrappers. Use `start-local-background.ps1 -Build` after source changes; ordinary starts reuse the existing `client/dist` build.
+
+### Linux And macOS Scripts
+
+The same workflow is available on Linux and macOS. Make the shell scripts executable once:
+
+```bash
+chmod +x scripts/unix/*.sh scripts/common/*.sh
+```
+
+Start the local Node service in the background:
+
+```bash
+./scripts/unix/start-local.sh --build --background --port 6100
+```
+
+Stop or restart it:
+
+```bash
+./scripts/unix/stop-local.sh
+./scripts/unix/restart-local.sh --port 6100
+```
+
+Install or remove login-time autostart:
+
+```bash
+./scripts/unix/install-autostart.sh --port 6100
+./scripts/unix/uninstall-autostart.sh
+```
+
+Linux uses a per-user `systemd` service. macOS uses a per-user `launchd` agent. Neither requires root privileges. Add `--build` to the install command after source changes.
+
+Docker has matching cross-platform helpers:
+
+```bash
+./scripts/unix/start-docker.sh --port 6100
+./scripts/unix/stop-docker.sh
+./scripts/unix/restart-docker.sh --port 6100
+```
+
+Use `--foreground` with `start-docker.sh` when live container output is needed. These scripts use `docker compose up -d --build` by default.
+
+### Port Configuration
+
+The application default is `6100`. You do not need to edit application source code to use another port:
+
+- Windows PowerShell: `.\scripts\windows\start-local-background.ps1 -Port 6200`
+- Linux/macOS shell: `./scripts/unix/start-local.sh --background --port 6200`
+- Docker: `.\scripts\windows\start-docker.ps1 -Port 6200` or `PORT=6200 ./scripts/unix/start-docker.sh`
+- Linux/macOS environment variable: `CROSSLAN_PORT=6200`
+- Docker Compose environment variable: `PORT=6200`
+
+The scripts pass the selected port to both the server and Docker Compose. Avoid port `6000`: Chromium-based browsers classify it as unsafe and may refuse to open the page.
 
 ## Docker
 
@@ -110,27 +173,34 @@ docker compose up -d --build
 On Windows PowerShell:
 
 ```powershell
-.\scripts\start-docker.ps1
+.\scripts\windows\start-docker.ps1
 ```
 
-The compose file maps the PC save directory to `~/Downloads/CrossLAN` on Windows-style hosts and `/data/CrossLAN` inside the container. It publishes host port `8765` to the container service. Open `http://<host-LAN-IP>:8765` from other devices on the same LAN.
+The compose file maps the PC save directory to `~/Downloads/CrossLAN` on Windows-style hosts and `/data/CrossLAN` inside the container. It publishes host port `6100` to the container service. Open `http://<host-LAN-IP>:6100` from other devices on the same LAN.
 
 Optional Docker script parameters:
 
 ```powershell
-.\scripts\start-docker.ps1 -Port 8765 -RelayBufferMb 256
+.\scripts\windows\start-docker.ps1 -Port 6100 -RelayBufferMb 256 -AdvertisedIp 192.168.31.9
+```
+
+`-AdvertisedIp` is useful when the host PC opens Docker through `localhost`, or when Windows has several network adapters. Without it, CrossLAN uses the hostname/IP used to open the page and never advertises the container's own interface as the service host address. You can also set it directly:
+
+```powershell
+$env:CROSSLAN_ADVERTISED_IP = "192.168.31.9"
+docker compose up -d --build
 ```
 
 The Docker helper now starts detached by default, so the terminal is released immediately. Use `-Foreground` when you need live container output while debugging:
 
 ```powershell
-.\scripts\start-docker.ps1 -Foreground
+.\scripts\windows\start-docker.ps1 -Foreground
 ```
 
 For double-click startup, use:
 
 ```text
-scripts\start-docker.cmd
+scripts\windows\start-docker.cmd
 ```
 
 To stop the detached service:
@@ -138,6 +208,8 @@ To stop the detached service:
 ```powershell
 docker compose down
 ```
+
+The matching helper scripts also provide `stop-docker.ps1`, `restart-docker.ps1`, `stop-docker.cmd`, and `restart-docker.cmd` on Windows.
 
 If Docker cannot pull `node:20-alpine`, configure Docker Desktop registry/proxy or build after the network can reach Docker Hub. The app code itself does not require Docker to run; local `npm run build && npm start` is fine.
 
@@ -150,7 +222,7 @@ docker compose up -d --build
 Docker deployment sets `CROSSLAN_DEPLOYMENT=docker`. In this mode, CrossLAN advertises the Docker service host as one direct-save device card and hides the host browser UI from other devices, so sending to the service host avoids browser/IDM download interception and writes into the mapped save directory. If an old browser-download host card still appears after an update, close old tabs or force refresh the page. On the host PC you can also open:
 
 ```text
-http://<host-LAN-IP>:8765/?serviceHost=1
+http://<host-LAN-IP>:6100/?serviceHost=1
 ```
 
 ## Device Cards
@@ -264,6 +336,24 @@ PC: Ctrl+F5
 Phone: close the tab, reopen CrossLAN, or use the browser refresh menu
 ```
 
+## Project Size And Cleanup
+
+The source tree is small. Most local disk usage comes from `node_modules` and the generated `client/dist` directory, not from files shipped to Git. `.gitignore` excludes these artifacts, and `.dockerignore` keeps them out of the Docker build context.
+
+To reclaim generated files without touching source code:
+
+```powershell
+.\scripts\common\clean-generated.ps1
+```
+
+On Linux/macOS:
+
+```bash
+./scripts/common/clean-generated.sh
+```
+
+The cleanup removes the generated `client/dist` directory. Run `npm run build` again when the frontend output is needed.
+
 ## Release Checks
 
 Before publishing:
@@ -280,6 +370,7 @@ npm --workspace server run test:relay-http
 - `client/src/storage/DeviceStore.ts`: IndexedDB cache for known devices.
 - `client/src/transfer/TransferEngine.ts`: WebRTC signaling, chunked file reads, DataChannel backpressure, progress, and cleanup.
 - `server/src/signaling/SignalingHub.js`: multi-tab aware WebSocket signaling and transfer-route tracking.
+- `server/src/Logger.js`: compact timestamped logging, optional file output, debug filtering, and one-file rotation.
 - `server/src/index.js`: static app server, storage API, large-file direct/relay HTTP streaming, optional HTTPS.
 - `server/src/relay/RelayBufferPool.js`: per-session watermarks and the shared Relay memory budget.
 - `server/test/RelayBufferPool.test.js`: focused capacity, backpressure, fairness, and cancellation tests for Relay buffering.

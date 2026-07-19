@@ -234,7 +234,13 @@ let pageHiddenAt: number | null = null;
 const progressItems = computed(() => [...progress.value.values()]);
 const isZh = computed(() => navigator.language.toLowerCase().startsWith('zh'));
 const t = computed(() => isZh.value ? messages.zh : messages.en);
-const localStatus = computed(() => localIdentity.value ? `${t.value.local} ${localIdentity.value.ip}` : t.value.connecting);
+const localStatus = computed(() => {
+  const local = localIdentity.value;
+  if (!local) return t.value.connecting;
+  const hostView = serviceHostUi.value || isLoopbackHost(location.hostname);
+  const ip = hostView ? getServiceHostIp(local) : local.ip;
+  return `${t.value.local} ${ip}`;
+});
 const protocolLabel = computed(() => location.protocol === 'https:' ? 'HTTPS' : 'HTTP LAN');
 const themeButtonLabel = computed(() => {
   if (themePreference.value === 'light') return t.value.themeLight;
@@ -368,8 +374,10 @@ function isLoopbackHost(host: string) {
 }
 
 function getServiceHostIp(local: LocalIdentity) {
+  const advertisedIp = local.serverIps.find(ip => !isLoopbackHost(ip));
+  if (advertisedIp) return advertisedIp;
   if (location.hostname && !isLoopbackHost(location.hostname)) return location.hostname;
-  return local.serverIps[0] || local.ip || location.hostname;
+  return local.ip || location.hostname;
 }
 
 async function connectSignaling() {
@@ -392,7 +400,7 @@ async function detectHostConnectionRole(): Promise<HostConnectionRole> {
     return { directSave: true, hostUi: true, serverMode: remoteMode };
   }
 
-  const localHealth = await fetchHealth(`${location.protocol}//127.0.0.1:${location.port || '8765'}/api/health`, LOCAL_HEALTH_TIMEOUT_MS);
+  const localHealth = await fetchHealth(`${location.protocol}//127.0.0.1:${location.port || '6100'}/api/health`, LOCAL_HEALTH_TIMEOUT_MS);
   const sameDockerServer = Boolean(
     localHealth?.ok &&
     normalizeServerMode(localHealth.deploymentMode) === 'docker' &&
@@ -434,7 +442,7 @@ function probeLocalDockerHostUi(remoteHealth: HealthResponse | null) {
       hostUi: '1',
       probe: '1'
     });
-    const url = `${protocol}://127.0.0.1:${location.port || '8765'}/ws?${params.toString()}`;
+    const url = `${protocol}://127.0.0.1:${location.port || '6100'}/ws?${params.toString()}`;
     let done = false;
     const finish = (ok: boolean) => {
       if (done) return;

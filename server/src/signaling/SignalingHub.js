@@ -9,12 +9,13 @@ const ROUTE_TTL_MS = 30 * 60 * 1000;
 const SERVICE_HOST_DEVICE_ID = 'crosslan-service-host';
 
 export class SignalingHub {
-  constructor({ wss, mdns, networkProber, deploymentMode = 'node', serverInstanceId = '' }) {
+  constructor({ wss, mdns, networkProber, deploymentMode = 'node', serverInstanceId = '', logger = console }) {
     this.wss = wss;
     this.mdns = mdns;
     this.networkProber = networkProber;
     this.deploymentMode = deploymentMode;
     this.serverInstanceId = serverInstanceId;
+    this.logger = logger;
     this.clients = new Map();
     this.hostUiDeviceIds = new Set();
     this.transferRoutes = new Map();
@@ -35,7 +36,7 @@ export class SignalingHub {
     if (isProbeClient(request)) {
       const hostUi = this.deploymentMode === 'docker' && isHostUiClient(request);
       if (hostUi) this.markHostUiDeviceId(id);
-      console.log('CrossLAN ws probe: id=' + id + ' ip=' + ip + ' hostUi=' + (hostUi ? '1' : '0') + ' ua=' + (request.headers['user-agent'] || 'Unknown device'));
+      this.logger.debug('CrossLAN ws probe: id=' + id + ' ip=' + ip + ' hostUi=' + (hostUi ? '1' : '0') + ' ua=' + (request.headers['user-agent'] || 'Unknown device'));
       this.send(socket, {
         type: 'hello',
         device: publicDevice({
@@ -48,7 +49,7 @@ export class SignalingHub {
           hostUi,
           lastSeen: Date.now()
         }),
-        serverIps: getLocalIpv4Addresses(),
+        serverIps: getAdvertisedServerIps(request, this.deploymentMode),
         serverMode: this.deploymentMode,
         serverInstanceId: this.serverInstanceId
       });
@@ -71,12 +72,12 @@ export class SignalingHub {
     };
 
     this.clients.set(connectionId, client);
-    console.log('CrossLAN ws connected: id=' + id + ' conn=' + connectionId + ' ip=' + ip + ' hostUi=' + (client.hostUi ? '1' : '0') + ' ua=' + client.userAgent);
+    this.logger.info('CrossLAN ws connected: id=' + id + ' conn=' + connectionId + ' ip=' + ip + ' hostUi=' + (client.hostUi ? '1' : '0') + ' ua=' + client.userAgent);
 
     this.send(socket, {
       type: 'hello',
       device: publicDevice(client),
-      serverIps: getLocalIpv4Addresses(),
+      serverIps: getAdvertisedServerIps(request, this.deploymentMode),
       serverMode: this.deploymentMode,
       serverInstanceId: this.serverInstanceId
     });
@@ -100,7 +101,7 @@ export class SignalingHub {
 
     if (message.type === 'device-list-request') {
       this.send(sender.socket, { type: 'device-list', devices: this.getDevicesFor(sender.id) });
-      console.log('CrossLAN signal device-list request: from=' + sender.id + ' conn=' + sender.connectionId);
+      this.logger.debug('CrossLAN signal device-list request: from=' + sender.id + ' conn=' + sender.connectionId);
       return;
     }
 
@@ -113,7 +114,7 @@ export class SignalingHub {
     }
 
     if (!SIGNAL_TYPES.has(message.type)) {
-      console.warn('CrossLAN signal unsupported: type=' + message.type + ' from=' + sender.id + ' transferId=' + getTransferId(message));
+      this.logger.warn('CrossLAN signal unsupported: type=' + message.type + ' from=' + sender.id + ' transferId=' + getTransferId(message));
       this.send(sender.socket, { type: 'error', message: `Unsupported message type: ${message.type}` });
       return;
     }
@@ -144,10 +145,10 @@ export class SignalingHub {
           to: sender.id,
           transferId
         });
-        console.log('CrossLAN signal service host direct auto-accepted: from=' + sender.id + ' conn=' + sender.connectionId + ' transferId=' + transferId);
+        this.logger.info('CrossLAN signal service host direct auto-accepted: from=' + sender.id + ' conn=' + sender.connectionId + ' transferId=' + transferId);
         return;
       }
-      console.warn('CrossLAN signal peer unavailable: type=' + message.type + ' from=' + sender.id + ' to=' + message.to + ' transferId=' + transferId);
+      this.logger.warn('CrossLAN signal peer unavailable: type=' + message.type + ' from=' + sender.id + ' to=' + message.to + ' transferId=' + transferId);
       this.send(sender.socket, { type: 'peer-unavailable', to: message.to });
       return;
     }
@@ -170,7 +171,7 @@ export class SignalingHub {
     for (const target of targets) {
       this.send(target.socket, payload);
     }
-    console.log('CrossLAN signal routed: type=' + message.type + ' from=' + sender.id + ' conn=' + sender.connectionId + ' to=' + message.to + ' targets=' + targets.map(target => target.connectionId).join(',') + ' transferId=' + transferId);
+    this.logger.debug('CrossLAN signal routed: type=' + message.type + ' from=' + sender.id + ' conn=' + sender.connectionId + ' to=' + message.to + ' targets=' + targets.map(target => target.connectionId).join(',') + ' transferId=' + transferId);
   }
 
   resolveTargets(sender, message, transferId) {
@@ -220,7 +221,7 @@ export class SignalingHub {
 
   removeClient(client, reason) {
     this.clients.delete(client.connectionId);
-    console.log('CrossLAN ws ' + reason + ': id=' + client.id + ' conn=' + client.connectionId);
+    this.logger.info('CrossLAN ws ' + reason + ': id=' + client.id + ' conn=' + client.connectionId);
     this.broadcastDeviceList();
   }
 
@@ -368,16 +369,77 @@ function isProbeClient(request) {
 }
 
 function isServiceHostRequest(request, ip) {
-  const host = String(request.headers.host || '').split(':')[0].toLowerCase();
-  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return true;
+  const host = getRequestHost(request);
+  if (isLoopbackHost(host)) return true;
   if (ip === '127.0.0.1' || ip === '::1') return true;
   return getLocalIpv4Addresses().includes(ip);
 }
 
+function getAdvertisedServerIps(request, deploymentMode) {
+  const configuredIp = String(process.env.CROSSLAN_ADVERTISED_IP || '').trim();
+  if (configuredIp) return [configuredIp];
+
+  const requestHost = getRequestHost(request);
+  const localIps = getLocalIpv4Addresses();
+  if (requestHost && !isLoopbackHost(requestHost) && !localIps.includes(requestHost)) {
+    return [requestHost];
+  }
+
+  // A Docker container cannot reliably discover the Windows host's LAN IP.
+  // Never expose the container interface as the advertised service address.
+  if (deploymentMode === 'docker') return [];
+  return localIps;
+}
+
+function getRequestHost(request) {
+  const forwardedHost = request.headers['x-forwarded-host'];
+  const headerValue = forwardedHost || request.headers.host || '';
+  const rawHost = Array.isArray(headerValue) ? headerValue[0] : headerValue;
+  const value = String(rawHost || '').split(',')[0].trim();
+
+  if (value.startsWith('[')) {
+    const closingBracket = value.indexOf(']');
+    if (closingBracket > 0) return value.slice(1, closingBracket).toLowerCase();
+  }
+
+  // Only a single-colon host can be an ordinary hostname/IPv4 address with a port.
+  // Leave unbracketed IPv6 addresses intact.
+  if (value.indexOf(':') === value.lastIndexOf(':')) {
+    const separator = value.lastIndexOf(':');
+    if (/^\d+$/.test(value.slice(separator + 1))) {
+      return value.slice(0, separator).toLowerCase();
+    }
+  }
+
+  return value.toLowerCase();
+}
+
+function isLoopbackHost(host) {
+  return host === 'localhost' || host === '127.0.0.1' || host === '::1';
+}
+
 function getLocalIpv4Addresses() {
-  return Object.values(os.networkInterfaces())
-    .flat()
-    .filter(Boolean)
+  return Object.entries(os.networkInterfaces())
+    .flatMap(([name, interfaces]) => (interfaces || []).map(iface => ({ name, ...iface })))
     .filter(iface => iface.family === 'IPv4' && !iface.internal)
+    .sort(compareNetworkInterfaces)
     .map(iface => iface.address);
+}
+
+function compareNetworkInterfaces(a, b) {
+  const virtualDifference = Number(isVirtualInterfaceName(a.name)) - Number(isVirtualInterfaceName(b.name));
+  if (virtualDifference !== 0) return virtualDifference;
+  return ipv4AddressScore(b.address) - ipv4AddressScore(a.address);
+}
+
+function isVirtualInterfaceName(name = '') {
+  return /docker|veth|v-?ethernet|hyper[- ]?v|vmware|vmnet|virtualbox|vbox|wsl|teredo|tunnel|wireguard|tailscale|zerotier|vpn|bridge|container|loopback/i.test(name);
+}
+
+function ipv4AddressScore(address = '') {
+  if (address.startsWith('169.254.')) return -100;
+  if (address.startsWith('192.168.')) return 30;
+  if (address.startsWith('10.')) return 20;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(address)) return 10;
+  return 0;
 }

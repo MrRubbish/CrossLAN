@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "node --watch src/index.js",
     "start": "node src/index.js",
-    "check": "node --check src/index.js && node --check src/relay/RelayBufferPool.js && node --check src/signaling/SignalingHub.js && node --check src/discovery/MdnsDiscovery.js && node --check src/network/NetworkProber.js && node --test test/RelayBufferPool.test.js test/SignalingHub.test.js",
+    "check": "node --check src/index.js && node --check src/Logger.js && node --check src/relay/RelayBufferPool.js && node --check src/signaling/SignalingHub.js && node --check src/discovery/MdnsDiscovery.js && node --check src/network/NetworkProber.js && node --test test/RelayBufferPool.test.js test/SignalingHub.test.js",
     "test:relay": "node --test test/RelayBufferPool.test.js",
     "test:relay-http": "node test/RelayHttpSmoke.js",
     "test:signaling": "node --test test/SignalingHub.test.js"
