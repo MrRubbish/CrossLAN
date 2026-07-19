@@ -1,16 +1,24 @@
 param(
   [string]$TaskName = 'CrossLAN Node',
-  [int]$Port = 8765,
+  [int]$Port = 6100,
   [string]$SaveDir = "$env:USERPROFILE\Downloads\CrossLAN",
   [int]$RelayBufferMb = 256,
+  [string]$AdvertisedIp = '',
   [switch]$Build,
   [switch]$StartNow
 )
 
 $ErrorActionPreference = 'Stop'
-$root = Split-Path -Parent $PSScriptRoot
-$workerScript = Join-Path $root 'scripts\start-local-background.ps1'
+$root = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+$workerScript = Join-Path $PSScriptRoot 'start-local-background.ps1'
 $distIndex = Join-Path $root 'client\dist\index.html'
+
+if ($Port -lt 1 -or $Port -gt 65535) {
+  throw "Invalid port: $Port"
+}
+if ($Port -eq 6000) {
+  Write-Warning 'Chromium-based browsers block port 6000; use 6100 or another safe port.'
+}
 
 if (-not (Test-Path -LiteralPath $workerScript)) {
   throw "Missing startup script: $workerScript"
@@ -30,7 +38,8 @@ $userId = "$env:USERDOMAIN\$env:USERNAME"
 $powershellPath = (Get-Command powershell.exe -ErrorAction Stop).Source
 $quotedWorkerScript = '"' + $workerScript + '"'
 $quotedSaveDir = '"' + $SaveDir + '"'
-$actionArguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File $quotedWorkerScript -Worker -Port $Port -SaveDir $quotedSaveDir -RelayBufferMb $RelayBufferMb"
+$quotedAdvertisedIp = '"' + $AdvertisedIp + '"'
+$actionArguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File $quotedWorkerScript -Worker -Port $Port -SaveDir $quotedSaveDir -RelayBufferMb $RelayBufferMb -AdvertisedIp $quotedAdvertisedIp"
 
 $action = New-ScheduledTaskAction `
   -Execute $powershellPath `

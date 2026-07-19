@@ -2,9 +2,10 @@ import { Bonjour } from 'bonjour-service';
 import os from 'node:os';
 
 export class MdnsDiscovery {
-  constructor({ port, serviceName }) {
+  constructor({ port, serviceName, logger = console }) {
     this.port = port;
     this.serviceName = serviceName;
+    this.logger = logger;
     this.bonjour = new Bonjour();
     this.service = null;
     this.browser = null;
@@ -24,7 +25,7 @@ export class MdnsDiscovery {
     });
     this.service.on('error', error => {
       this.lastError = error;
-      console.warn('CrossLAN discovery warning: ' + (error instanceof Error ? error.message : error));
+      this.logger.warn('CrossLAN discovery warning: ' + (error instanceof Error ? error.message : error));
     });
 
     // mDNS is a discovery hint, while WebSocket remains the live source of
@@ -32,7 +33,7 @@ export class MdnsDiscovery {
     // bootstrap without changing the WebRTC or transfer engine.
     this.browser = this.bonjour.find({ type: 'crosslan' });
     this.browser.on('error', error => {
-      console.warn('CrossLAN discovery browser warning: ' + (error instanceof Error ? error.message : error));
+      this.logger.warn('CrossLAN discovery browser warning: ' + (error instanceof Error ? error.message : error));
     });
     this.browser.on('up', service => {
       const addresses = service.addresses?.filter(isIpv4) || [];

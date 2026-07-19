@@ -60,10 +60,10 @@ export default defineConfig({
     host: '0.0.0.0',
     proxy: {
       '/ws': {
-        target: 'ws://localhost:8765',
+        target: 'ws://localhost:6100',
         ws: true
       },
-      '/api': 'http://localhost:8765'
+      '/api': 'http://localhost:6100'
     }
   }
 });

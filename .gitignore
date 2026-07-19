@@ -1,5 +1,11 @@
 node_modules/
 client/dist/
+desktop/dist/
+desktop/src-tauri/binaries/*.exe
+desktop/src-tauri/gen/
+desktop/src-tauri/target/
+.pkg-cache/
+*.pid
 *.log
 .probe-*.log
 .selftest-*.log

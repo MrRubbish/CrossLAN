@@ -1,0 +1,60 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "CrossLAN",
+  "version": "1.0.0",
+  "identifier": "com.mrrubbish.crosslan",
+  "build": {
+    "beforeDevCommand": "npm run prepare:sidecar && npm run dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "npm run prepare:sidecar && npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "CrossLAN",
+        "width": 1180,
+        "height": 820,
+        "minWidth": 720,
+        "minHeight": 560,
+        "resizable": true,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "category": "Utility",
+    "shortDescription": "Lightweight LAN file transfer",
+    "longDescription": "CrossLAN opens the existing LAN transfer page and keeps its local service running until the window is closed.",
+    "publisher": "MrRubbish",
+    "externalBin": [
+      "binaries/crosslan-server"
+    ],
+    "resources": {
+      "../../client/dist/": "client/dist/"
+    },
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "embedBootstrapper",
+        "silent": true
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "startMenuFolder": "CrossLAN",
+        "installerHooks": "nsis-hooks.nsh"
+      }
+    }
+  }
+}

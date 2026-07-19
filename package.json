@@ -7,10 +7,15 @@
     "dev": "concurrently \"npm --workspace server run dev\" \"npm --workspace client run dev\"",
     "build": "npm --workspace client run build",
     "start": "npm --workspace server start",
-    "check": "npm --workspace client run typecheck && npm --workspace client run test:transfer && npm --workspace server run check"
+    "check": "npm --workspace client run typecheck && npm --workspace client run test:transfer && npm --workspace server run check",
+    "desktop:prepare": "npm --workspace desktop run prepare:sidecar",
+    "desktop:dev": "npm --workspace desktop run tauri:dev",
+    "desktop:build": "npm --workspace desktop run tauri:build",
+    "desktop:check": "npm --workspace desktop run check"
   },
-  "workspaces": ["client", "server"],
+  "workspaces": ["client", "server", "desktop"],
   "devDependencies": {
+    "@yao-pkg/pkg": "^6.6.0",
     "concurrently": "^8.2.2"
   }
 }
