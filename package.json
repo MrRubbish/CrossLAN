@@ -1,6 +1,6 @@
 {
   "name": "crosslan",
-  "version": "1.0.0",
+  "version": "1.0.4",
   "private": true,
   "description": "Low-resource LAN WebRTC file transfer PWA.",
   "scripts": {
@@ -15,7 +15,8 @@
   },
   "workspaces": ["client", "server", "desktop"],
   "devDependencies": {
-    "@yao-pkg/pkg": "^6.6.0",
-    "concurrently": "^8.2.2"
+    "concurrently": "^8.2.2",
+    "esbuild": "^0.23.1",
+    "postject": "^1.0.0-alpha.6"
   }
 }

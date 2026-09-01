@@ -105,6 +105,107 @@ test('batch approval messages route between the selected devices', async () => {
   hub.close();
 });
 
+test('p2p request is delivered before negotiation and pins the receiver connection', async () => {
+  const hub = createHub('node');
+  const sender = addClient(hub, { id: 'sender', ip: '192.168.1.20' });
+  const receiver = addClient(hub, { id: 'receiver', ip: '192.168.1.21' });
+  const transferId = 'p2p-request-1';
+  const fileMeta = createFileMeta(transferId);
+
+  await sendSignal(hub, sender, {
+    type: 'p2p-transfer-request',
+    to: receiver.id,
+    fileMeta
+  });
+
+  assert.equal(messagesOfType(receiver, 'p2p-transfer-request').length, 1);
+  assert.equal(messagesOfType(sender, 'p2p-transfer-request').length, 0);
+  assert.equal(hub.transferRoutes.get(transferId).receiverConnectionId, receiver.connectionId);
+
+  await sendSignal(hub, receiver, {
+    type: 'p2p-transfer-accept',
+    to: sender.id,
+    transferId
+  });
+
+  assert.equal(messagesOfType(sender, 'p2p-transfer-accept').length, 1);
+  hub.close();
+});
+
+test('p2p negotiation messages follow the transfer route in both directions', async () => {
+  const hub = createHub('node');
+  const sender = addClient(hub, { id: 'sender', ip: '192.168.1.20' });
+  const receiver = addClient(hub, { id: 'receiver', ip: '192.168.1.21' });
+  const transferId = 'p2p-route-1';
+
+  await sendSignal(hub, sender, {
+    type: 'p2p-transfer-request',
+    to: receiver.id,
+    fileMeta: createFileMeta(transferId)
+  });
+  await sendSignal(hub, receiver, {
+    type: 'p2p-transfer-accept',
+    to: sender.id,
+    transferId
+  });
+
+  await sendSignal(hub, sender, {
+    type: 'offer',
+    to: receiver.id,
+    transferId,
+    description: { type: 'offer', sdp: 'offer' },
+    fileMeta: createFileMeta(transferId)
+  });
+  await sendSignal(hub, receiver, {
+    type: 'answer',
+    to: sender.id,
+    transferId,
+    description: { type: 'answer', sdp: 'answer' }
+  });
+  await sendSignal(hub, sender, {
+    type: 'ice-candidate',
+    to: receiver.id,
+    transferId,
+    candidate: { candidate: 'candidate:sender' }
+  });
+  await sendSignal(hub, receiver, {
+    type: 'ice-candidate',
+    to: sender.id,
+    transferId,
+    candidate: { candidate: 'candidate:receiver' }
+  });
+
+  assert.equal(messagesOfType(receiver, 'offer').length, 1);
+  assert.equal(messagesOfType(sender, 'answer').length, 1);
+  assert.equal(messagesOfType(receiver, 'ice-candidate').length, 1);
+  assert.equal(messagesOfType(sender, 'ice-candidate').length, 1);
+  hub.close();
+});
+
+test('p2p cancellation reaches a receiver before it accepts', async () => {
+  const hub = createHub('node');
+  const sender = addClient(hub, { id: 'sender', ip: '192.168.1.20' });
+  const receiver = addClient(hub, { id: 'receiver', ip: '192.168.1.21' });
+  const transferId = 'p2p-cancel-1';
+
+  await sendSignal(hub, sender, {
+    type: 'p2p-transfer-request',
+    to: receiver.id,
+    fileMeta: createFileMeta(transferId)
+  });
+  await sendSignal(hub, sender, {
+    type: 'transfer-cancel',
+    to: receiver.id,
+    transferId,
+    reason: 'cancelled'
+  });
+
+  const cancellations = messagesOfType(receiver, 'transfer-cancel');
+  assert.equal(cancellations.length, 1);
+  assert.equal(cancellations[0].transferId, transferId);
+  hub.close();
+});
+
 function createHub(deploymentMode) {
   const wss = new EventEmitter();
   return new SignalingHub({

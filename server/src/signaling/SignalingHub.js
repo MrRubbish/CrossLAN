@@ -1,9 +1,10 @@
 import os from 'node:os';
 import { nanoid } from 'nanoid';
 
-const SIGNAL_TYPES = new Set(['offer', 'answer', 'ice-candidate', 'transfer-accept', 'transfer-reject', 'batch-transfer-request', 'batch-transfer-accept', 'batch-transfer-reject', 'direct-transfer-request', 'direct-transfer-accept', 'direct-transfer-reject', 'relay-transfer-request', 'relay-transfer-accept', 'relay-transfer-reject', 'relay-transfer-progress', 'relay-transfer-ready', 'relay-transfer-error', 'transfer-cancel']);
-const REQUEST_TYPES = new Set(['transfer-accept', 'direct-transfer-request', 'relay-transfer-request', 'offer']);
-const RESPONSE_TYPES = new Set(['transfer-accept', 'transfer-reject', 'direct-transfer-accept', 'direct-transfer-reject', 'relay-transfer-accept', 'relay-transfer-reject', 'answer']);
+const SIGNAL_TYPES = new Set(['offer', 'answer', 'ice-candidate', 'p2p-transfer-request', 'p2p-transfer-accept', 'p2p-transfer-reject', 'transfer-accept', 'transfer-reject', 'batch-transfer-request', 'batch-transfer-accept', 'batch-transfer-reject', 'direct-transfer-request', 'direct-transfer-accept', 'direct-transfer-reject', 'relay-transfer-request', 'relay-transfer-accept', 'relay-transfer-reject', 'relay-transfer-progress', 'relay-transfer-ready', 'relay-transfer-error', 'transfer-cancel']);
+const REQUEST_TYPES = new Set(['p2p-transfer-request', 'direct-transfer-request', 'relay-transfer-request']);
+const RESPONSE_TYPES = new Set(['p2p-transfer-accept', 'p2p-transfer-reject', 'transfer-accept', 'transfer-reject', 'direct-transfer-accept', 'direct-transfer-reject', 'relay-transfer-accept', 'relay-transfer-reject']);
+const NEGOTIATION_TYPES = new Set(['offer', 'answer', 'ice-candidate']);
 const RECEIVER_FOLLOWUP_TYPES = new Set(['relay-transfer-progress', 'relay-transfer-ready', 'relay-transfer-error']);
 const ROUTE_TTL_MS = 30 * 60 * 1000;
 const SERVICE_HOST_DEVICE_ID = 'crosslan-service-host';
@@ -120,7 +121,7 @@ export class SignalingHub {
     }
 
     const transferId = getTransferId(message);
-    if (transferId && REQUEST_TYPES.has(message.type)) {
+    if (transferId && REQUEST_TYPES.has(message.type) && !this.transferRoutes.has(transferId)) {
       this.transferRoutes.set(transferId, {
         requesterConnectionId: sender.connectionId,
         requesterId: sender.id,
@@ -153,9 +154,18 @@ export class SignalingHub {
       return;
     }
 
+    if (transferId && REQUEST_TYPES.has(message.type)) {
+      const route = this.transferRoutes.get(transferId);
+      if (route && !route.receiverConnectionId) {
+        route.receiverConnectionId = targets[0].connectionId;
+        route.receiverId = targets[0].id;
+        route.updatedAt = Date.now();
+      }
+    }
+
     if (transferId && RESPONSE_TYPES.has(message.type)) {
       const route = this.transferRoutes.get(transferId);
-      if (route) {
+      if (route && (!route.receiverConnectionId || sender.id === route.receiverId)) {
         route.receiverConnectionId = sender.connectionId;
         route.receiverId = sender.id;
         route.updatedAt = Date.now();
@@ -180,7 +190,7 @@ export class SignalingHub {
     if (this.isServiceHostDirectRequest(message)) {
       return [...this.clients.values()]
         .filter(client => client.connectionId !== sender.connectionId && client.hostUi && client.canDirectSave && isOpenClient(client))
-        .sort((a, b) => b.lastSeen - a.lastSeen)
+        .sort(compareCurrentConnections)
         .slice(0, 1);
     }
 
@@ -191,6 +201,26 @@ export class SignalingHub {
       if (sender.connectionId === route.receiverConnectionId && isOpenClient(requester)) return [requester];
       if (sender.id === route.requesterId && isOpenClient(receiver)) return [receiver];
       if (sender.id === route.receiverId && isOpenClient(requester)) return [requester];
+    }
+
+    if (route && NEGOTIATION_TYPES.has(message.type)) {
+      const requester = this.clients.get(route.requesterConnectionId);
+      const receiver = route.receiverConnectionId ? this.clients.get(route.receiverConnectionId) : null;
+      if (sender.connectionId === route.requesterConnectionId && isOpenClient(receiver)) return [receiver];
+      if (sender.connectionId === route.receiverConnectionId && isOpenClient(requester)) return [requester];
+      if (sender.id === route.requesterId && isOpenClient(receiver)) return [receiver];
+      if (sender.id === route.receiverId && isOpenClient(requester)) return [requester];
+    }
+
+    if (route && REQUEST_TYPES.has(message.type) && sender.connectionId === route.requesterConnectionId) {
+      const receiver = route.receiverConnectionId ? this.clients.get(route.receiverConnectionId) : null;
+      if (isOpenClient(receiver)) return [receiver];
+      const replacement = this.getTargetsForDevice(route.receiverId, sender.connectionId)[0];
+      if (replacement) {
+        route.receiverConnectionId = replacement.connectionId;
+        route.updatedAt = Date.now();
+        return [replacement];
+      }
     }
 
     if (route && RESPONSE_TYPES.has(message.type)) {
@@ -214,13 +244,26 @@ export class SignalingHub {
 
   getTargetsForDevice(deviceId, excludeConnectionId = '') {
     const id = String(deviceId || '');
-    return [...this.clients.values()]
+    const candidates = [...this.clients.values()]
       .filter(client => client.id === id && client.connectionId !== excludeConnectionId && isOpenClient(client))
-      .sort((a, b) => b.lastSeen - a.lastSeen);
+      .sort(compareCurrentConnections);
+    return candidates.length ? [candidates[0]] : [];
   }
 
   removeClient(client, reason) {
-    this.clients.delete(client.connectionId);
+    if (!this.clients.delete(client.connectionId)) return;
+    const replacement = this.getTargetsForDevice(client.id)[0];
+    for (const route of this.transferRoutes.values()) {
+      if (route.requesterConnectionId === client.connectionId) {
+        if (replacement) route.requesterConnectionId = replacement.connectionId;
+      }
+      if (route.receiverConnectionId === client.connectionId) {
+        if (replacement) route.receiverConnectionId = replacement.connectionId;
+      }
+      if (replacement && (route.requesterConnectionId === replacement.connectionId || route.receiverConnectionId === replacement.connectionId)) {
+        route.updatedAt = Date.now();
+      }
+    }
     this.logger.info('CrossLAN ws ' + reason + ': id=' + client.id + ' conn=' + client.connectionId);
     this.broadcastDeviceList();
   }
@@ -430,6 +473,10 @@ function compareNetworkInterfaces(a, b) {
   const virtualDifference = Number(isVirtualInterfaceName(a.name)) - Number(isVirtualInterfaceName(b.name));
   if (virtualDifference !== 0) return virtualDifference;
   return ipv4AddressScore(b.address) - ipv4AddressScore(a.address);
+}
+
+function compareCurrentConnections(a, b) {
+  return (b.connectedAt || 0) - (a.connectedAt || 0) || (b.lastSeen || 0) - (a.lastSeen || 0);
 }
 
 function isVirtualInterfaceName(name = '') {
