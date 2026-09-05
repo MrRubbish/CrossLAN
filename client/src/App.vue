@@ -1,5 +1,67 @@
 <template>
   <main class="min-h-screen bg-mist text-ink">
+    <div
+      v-if="activeIncomingPrompt"
+      class="fixed inset-0 z-50 flex items-end justify-center bg-ink/35 p-3 sm:items-center sm:p-6"
+      role="presentation"
+      @click.self="rejectActiveIncomingPrompt"
+    >
+      <section
+        class="w-full max-w-lg rounded-lg border border-line bg-panel p-5 shadow-xl"
+        role="dialog"
+        aria-modal="true"
+        :aria-label="activeIncomingPrompt.kind === 'batch' ? t.receiveBatchPrompt : activeIncomingPrompt.promptLabel"
+      >
+        <div class="flex items-start justify-between gap-4">
+          <div class="min-w-0">
+            <p class="label">{{ t.receive }}</p>
+            <h2 class="mt-1 break-words text-xl font-800">
+              {{ activeIncomingPrompt.kind === 'batch' ? t.receiveBatchPrompt : activeIncomingPrompt.promptLabel }}
+            </h2>
+          </div>
+          <span v-if="incomingPrompts.length > 1" class="shrink-0 rounded-full bg-teal/10 px-2 py-1 text-xs font-800 text-teal">
+            {{ incomingPrompts.length }}
+          </span>
+        </div>
+
+        <div class="mt-4 rounded-md border border-line bg-mist/60 p-3">
+          <p v-if="activeIncomingPrompt.kind === 'batch'" class="text-sm font-750">
+            {{ activeIncomingPrompt.fileCount }} {{ t.batchLabel }}
+          </p>
+          <p v-if="activeIncomingPrompt.meta" class="break-words text-sm font-750">
+            {{ activeIncomingPrompt.meta.name }}
+          </p>
+          <p class="mt-1 text-sm text-ink/55">
+            {{ activeIncomingPrompt.kind === 'batch'
+              ? formatBytes(activeIncomingPrompt.totalBytes || 0)
+              : formatBytes(activeIncomingPrompt.meta?.size || 0) }}
+          </p>
+          <p v-if="activeIncomingPrompt.kind === 'p2p'" class="mt-2 text-xs text-ink/55">
+            {{ t.p2pSaveHint }}
+          </p>
+        </div>
+
+        <p v-if="activeIncomingPrompt.error" class="mt-3 break-words text-sm text-coral">
+          {{ activeIncomingPrompt.error }}
+        </p>
+
+        <div class="mt-5 grid grid-cols-2 gap-3">
+          <button
+            class="tap border border-line bg-panel px-3 py-2 text-sm font-800"
+            type="button"
+            :disabled="activeIncomingPrompt.preparing"
+            @click="rejectActiveIncomingPrompt"
+          >{{ t.reject }}</button>
+          <button
+            class="tap bg-teal px-3 py-2 text-sm font-800 text-white disabled:cursor-wait disabled:opacity-60"
+            type="button"
+            :disabled="activeIncomingPrompt.preparing"
+            @click="acceptActiveIncomingPrompt"
+          >{{ activeIncomingPrompt.preparing ? t.preparingSave : t.accept }}</button>
+        </div>
+      </section>
+    </div>
+
     <section class="mx-auto max-w-5xl px-4 pb-10 pt-[env(safe-area-inset-top)] sm:px-6">
       <header class="flex items-center justify-between gap-4 py-5">
         <div>
@@ -129,7 +191,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { DeviceIdentity } from './identity/DeviceIdentity';
 import { SignalingClient } from './signaling/SignalingClient';
 import { DeviceStore } from './storage/DeviceStore';
-import { isBatchTransferMeta } from './transfer/BatchTransfer';
+import { createBatchTransferPlan, isBatchTransferMeta } from './transfer/BatchTransfer';
 import { TransferEngine } from './transfer/TransferEngine';
 import type { BandwidthMode, BatchTransferSummary, DeviceRecord, FileMeta, LocalIdentity, ServerMode, SignalingMessage, TransferBatchMeta, TransferProgress } from './types';
 
@@ -155,10 +217,10 @@ const ZIP_CHUNK_SIZE = 4 * 1024 * 1024;
 const textEncoder = new TextEncoder();
 const messages = {
   zh: {
-    local: '本机', connecting: '正在连接信令服务', online: '在线', offline: '离线', themeSystem: '系统', themeLight: '亮色', themeDark: '深色', themeTitle: '切换外观', devices: '局域网设备', selectTarget: '选择目标设备', refresh: '刷新', emptyDevices: '在同一局域网的另一台设备打开 CrossLAN，它会出现在这里。', deviceId: '设备 ID', lastSeen: '最后在线', transfers: '传输', noTransfers: '还没有传输任务。', clearTransfers: '清空任务', cancel: '取消', send: '发送', receive: '接收', openDownload: '打开下载', storage: '存储', saveDirectory: '服务主机保存目录', storageHint: '发送到运行 CrossLAN 服务的这台主机的大文件会直接保存到这里。Docker 通常映射到 /data/CrossLAN。', directSaveReceiver: '本机作为服务主机接收', directSaveReceiverHint: '只在运行 CrossLAN 服务的 PC 上开启；开启后其他设备发来的大文件会直存，不再触发浏览器/IDM 下载。', savePath: '保存路径', network: '网络', speedLimit: '速度限制', uploadLimitHint: '限速仅限制本机作为发送方的上传速度；浏览器下载速度由接收端和网络决定。', currentSpeed: '当前', averageSpeed: '平均', peakSpeed: '峰值', elapsed: '用时', unlimited: '不限速', manual: '手动', mbps: 'Mbps', direct: '直存', browserDownload: '浏览器下载', browserDownloadMode: '浏览器接收', p2p: 'P2P', measuring: '测速中', receivePrompt: '接收', receiveLargePrompt: '接收大文件', receiveBatchPrompt: '接收这批文件', receiverRejected: '接收方已拒绝文件。', waitingSender: '已接受，等待发送方...', waitingLink: '已接受，等待下载链接...', receiveComplete: '接收完成', savingDisk: '正在写入服务主机磁盘...', downloadReady: '下载已准备好。如果没有自动打开，请点“打开下载”。', sentDownloadManager: '已交给浏览器下载管理器。', waitConfirm: '等待对方确认...', waitPhoneConfirm: '等待接收端确认...', savedToPc: '已保存到服务主机', preparingPhone: '正在为接收端准备浏览器下载...', linkSentPhone: '下载链接已发送到接收端。', loadStorage: '正在读取保存目录...', loadStorageFailed: '读取保存目录失败。', saveStorageFailed: '保存目录失败。', current: '当前', saved: '已保存', parseFailed: '无法解析服务器响应。', uploadHttpFailed: '上传失败', uploadNetworkFailed: '上传失败：无法连接到 CrossLAN 服务。', cancelled: '传输已取消。', remoteCancelled: '对方已取消传输。', confirmTimeout: '等待对方确认超时。', failed: '传输失败。', duplicateSending: '这个文件正在传输中，已沿用现有任务。', duplicateIncoming: '相同文件已有接收任务，已忽略重复请求。', receivingRelay: '正在通过内存流式中继传输...', packagingBatch: '正在打包批量文件...', batchLabel: '批量文件'
+    local: '本机', connecting: '正在连接信令服务', online: '在线', offline: '离线', themeSystem: '系统', themeLight: '亮色', themeDark: '深色', themeTitle: '切换外观', devices: '局域网设备', selectTarget: '选择目标设备', refresh: '刷新', emptyDevices: '在同一局域网的另一台设备打开 CrossLAN，它会出现在这里。', deviceId: '设备 ID', lastSeen: '最后在线', transfers: '传输', noTransfers: '还没有传输任务。', clearTransfers: '清空任务', cancel: '取消', send: '发送', receive: '接收', accept: '接受', reject: '拒绝', preparingSave: '准备保存...', p2pSaveHint: '点击接受后选择保存位置，浏览器会直接接收文件。', openDownload: '打开下载', storage: '存储', saveDirectory: '服务主机保存目录', storageHint: '发送到运行 CrossLAN 服务的这台主机的大文件会直接保存到这里。Docker 通常映射到 /data/CrossLAN。', directSaveReceiver: '本机作为服务主机接收', directSaveReceiverHint: '只在运行 CrossLAN 服务的 PC 上开启；开启后其他设备发来的大文件会直存，不再触发浏览器/IDM 下载。', savePath: '保存路径', network: '网络', speedLimit: '速度限制', uploadLimitHint: '限速仅限制本机作为发送方的上传速度；浏览器下载速度由接收端和网络决定。', currentSpeed: '当前', averageSpeed: '平均', peakSpeed: '峰值', elapsed: '用时', unlimited: '不限速', manual: '手动', mbps: 'Mbps', direct: '直存', browserDownload: '浏览器下载', browserDownloadMode: '浏览器接收', p2p: 'P2P', measuring: '测速中', receivePrompt: '接收', receiveLargePrompt: '接收大文件', receiveBatchPrompt: '接收这批文件', receiverRejected: '接收方已拒绝文件。', waitingSender: '已接受，等待发送方...', waitingLink: '已接受，等待下载链接...', receiveComplete: '接收完成', savingDisk: '正在写入服务主机磁盘...', downloadReady: '下载已准备好。如果没有自动打开，请点“打开下载”。', sentDownloadManager: '已交给浏览器下载管理器。', waitConfirm: '等待对方确认...', waitPhoneConfirm: '等待接收端确认...', savedToPc: '已保存到服务主机', preparingPhone: '正在为接收端准备浏览器下载...', linkSentPhone: '下载链接已发送到接收端。', loadStorage: '正在读取保存目录...', loadStorageFailed: '读取保存目录失败。', saveStorageFailed: '保存目录失败。', current: '当前', saved: '已保存', parseFailed: '无法解析服务器响应。', uploadHttpFailed: '上传失败', uploadNetworkFailed: '上传失败：无法连接到 CrossLAN 服务。', cancelled: '传输已取消。', remoteCancelled: '对方已取消传输。', confirmTimeout: '等待对方确认超时。', failed: '传输失败。', duplicateSending: '这个文件正在传输中，已沿用现有任务。', duplicateIncoming: '相同文件已有接收任务，已忽略重复请求。', receivingRelay: '正在通过内存流式中继传输...', packagingBatch: '正在打包批量文件...', batchLabel: '批量文件'
   },
   en: {
-    local: 'Local', connecting: 'Connecting to signaling server', online: 'Online', offline: 'Offline', themeSystem: 'System', themeLight: 'Light', themeDark: 'Dark', themeTitle: 'Switch appearance', devices: 'LAN devices', selectTarget: 'Select target device', refresh: 'Refresh', emptyDevices: 'Open CrossLAN on another device in the same LAN and it will appear here.', deviceId: 'Device ID', lastSeen: 'Last seen', transfers: 'Transfers', noTransfers: 'No transfers yet.', clearTransfers: 'Clear tasks', cancel: 'Cancel', send: 'Send', receive: 'Receive', openDownload: 'Open download', storage: 'Storage', saveDirectory: 'Service host save directory', storageHint: 'Large files sent to the host running CrossLAN are saved directly here. Docker usually maps this to /data/CrossLAN.', directSaveReceiver: 'Receive as service host', directSaveReceiverHint: 'Enable only on the PC running CrossLAN. Incoming large files are saved directly and will not trigger browser/IDM downloads.', savePath: 'Save path', network: 'Network', speedLimit: 'Speed limit', uploadLimitHint: 'The limit only throttles uploads from this browser; browser download speed is controlled by the receiver and network.', currentSpeed: 'Now', averageSpeed: 'Avg', peakSpeed: 'Peak', elapsed: 'Time', unlimited: 'Unlimited', manual: 'Manual', mbps: 'Mbps', direct: 'Direct save', browserDownload: 'Browser download', browserDownloadMode: 'Browser receive', p2p: 'P2P', measuring: 'measuring', receivePrompt: 'Receive', receiveLargePrompt: 'Receive large file', receiveBatchPrompt: 'Receive this batch', receiverRejected: 'Receiver rejected the file.', waitingSender: 'Accepted. Waiting for sender...', waitingLink: 'Accepted. Waiting for download link...', receiveComplete: 'Receive complete', savingDisk: 'Saving to host disk...', downloadReady: 'Download ready. If it did not open, tap Open download.', sentDownloadManager: 'Sent to browser download manager.', waitConfirm: 'Waiting for receiver confirmation...', waitPhoneConfirm: 'Waiting for receiver confirmation...', savedToPc: 'Saved to service host', preparingPhone: 'Preparing browser download for receiver...', linkSentPhone: 'Download link sent to receiver.', loadStorage: 'Loading save directory...', loadStorageFailed: 'Failed to load directory.', saveStorageFailed: 'Failed to save directory.', current: 'Current', saved: 'Saved', parseFailed: 'Failed to parse server response.', uploadHttpFailed: 'Upload failed', uploadNetworkFailed: 'Upload failed: cannot connect to CrossLAN service.', cancelled: 'Transfer cancelled.', remoteCancelled: 'Peer cancelled the transfer.', confirmTimeout: 'Timed out waiting for receiver confirmation.', failed: 'Transfer failed.', duplicateSending: 'This file is already being transferred. Reusing the existing task.', duplicateIncoming: 'The same file already has a receive task. Ignoring the duplicate request.', receivingRelay: 'Streaming through memory relay...', packagingBatch: 'Packaging batch files...', batchLabel: 'Batch files' }
+    local: 'Local', connecting: 'Connecting to signaling server', online: 'Online', offline: 'Offline', themeSystem: 'System', themeLight: 'Light', themeDark: 'Dark', themeTitle: 'Switch appearance', devices: 'LAN devices', selectTarget: 'Select target device', refresh: 'Refresh', emptyDevices: 'Open CrossLAN on another device in the same LAN and it will appear here.', deviceId: 'Device ID', lastSeen: 'Last seen', transfers: 'Transfers', noTransfers: 'No transfers yet.', clearTransfers: 'Clear tasks', cancel: 'Cancel', send: 'Send', receive: 'Receive', accept: 'Accept', reject: 'Reject', preparingSave: 'Preparing save...', p2pSaveHint: 'Tap Accept to choose a save location. The browser will receive the file directly.', openDownload: 'Open download', storage: 'Storage', saveDirectory: 'Service host save directory', storageHint: 'Large files sent to the host running CrossLAN are saved directly here. Docker usually maps this to /data/CrossLAN.', directSaveReceiver: 'Receive as service host', directSaveReceiverHint: 'Enable only on the PC running CrossLAN. Incoming large files are saved directly and will not trigger browser/IDM downloads.', savePath: 'Save path', network: 'Network', speedLimit: 'Speed limit', uploadLimitHint: 'The limit only throttles uploads from this browser; browser download speed is controlled by the receiver and network.', currentSpeed: 'Now', averageSpeed: 'Avg', peakSpeed: 'Peak', elapsed: 'Time', unlimited: 'Unlimited', manual: 'Manual', mbps: 'Mbps', direct: 'Direct save', browserDownload: 'Browser download', browserDownloadMode: 'Browser receive', p2p: 'P2P', measuring: 'measuring', receivePrompt: 'Receive', receiveLargePrompt: 'Receive large file', receiveBatchPrompt: 'Receive this batch', receiverRejected: 'Receiver rejected the file.', waitingSender: 'Accepted. Waiting for sender...', waitingLink: 'Accepted. Waiting for download link...', receiveComplete: 'Receive complete', savingDisk: 'Saving to host disk...', downloadReady: 'Download ready. If it did not open, tap Open download.', sentDownloadManager: 'Sent to browser download manager.', waitConfirm: 'Waiting for receiver confirmation...', waitPhoneConfirm: 'Waiting for receiver confirmation...', savedToPc: 'Saved to service host', preparingPhone: 'Preparing browser download for receiver...', linkSentPhone: 'Download link sent to receiver.', loadStorage: 'Loading save directory...', loadStorageFailed: 'Failed to load directory.', saveStorageFailed: 'Failed to save directory.', current: 'Current', saved: 'Saved', parseFailed: 'Failed to parse server response.', uploadHttpFailed: 'Upload failed', uploadNetworkFailed: 'Upload failed: cannot connect to CrossLAN service.', cancelled: 'Transfer cancelled.', remoteCancelled: 'Peer cancelled the transfer.', confirmTimeout: 'Timed out waiting for receiver confirmation.', failed: 'Transfer failed.', duplicateSending: 'This file is already being transferred. Reusing the existing task.', duplicateIncoming: 'The same file already has a receive task. Ignoring the duplicate request.', receivingRelay: 'Streaming through memory relay...', packagingBatch: 'Packaging batch files...', batchLabel: 'Batch files' }
 };
 
 type ThemePreference = 'system' | 'light' | 'dark';
@@ -194,6 +256,20 @@ type SpeedSampleState = {
   mode?: TransferProgress['mode'];
   points: SpeedSamplePoint[];
 };
+type IncomingPromptKind = 'p2p' | 'direct' | 'relay' | 'batch';
+type IncomingPrompt = {
+  key: string;
+  from: string;
+  kind: IncomingPromptKind;
+  meta?: FileMeta;
+  promptLabel: string;
+  fileCount?: number;
+  totalBytes?: number;
+  preparing: boolean;
+  error?: string;
+  resolve: (accepted: boolean) => void;
+  settled?: boolean;
+};
 
 const identity = new DeviceIdentity();
 const store = new DeviceStore();
@@ -218,6 +294,8 @@ const activePeers = new Map<string, string>();
 const activeSendKeys = new Map<string, string>();
 const incomingPromptKeys = new Map<string, string>();
 const incomingBatchApprovals = new Map<string, IncomingBatchApproval>();
+const incomingPrompts = ref<IncomingPrompt[]>([]);
+const pendingIncomingPrompts = new Map<string, Promise<boolean>>();
 const activeTransferKeys = new Map<string, string>();
 const relayStateCache = new Map<string, { checkedAt: number; state: RelayState }>();
 const autoDownloadedTransfers = new Set<string>();
@@ -232,6 +310,7 @@ const storageStatusOk = ref(true);
 let speedDisplayTimer: number | null = null;
 let pageHiddenAt: number | null = null;
 const progressItems = computed(() => [...progress.value.values()]);
+const activeIncomingPrompt = computed(() => incomingPrompts.value[0] || null);
 const isZh = computed(() => navigator.language.toLowerCase().startsWith('zh'));
 const t = computed(() => isZh.value ? messages.zh : messages.en);
 const localStatus = computed(() => {
@@ -285,15 +364,14 @@ onMounted(() => {
   signaling.onDebug((message, details, level) => addLog(message, details, level));
   engine.onDebug((message, details, level) => addLog(message, details, level));
 
-  signaling.onMessage(async message => {
+  signaling.onMessage(message => {
     addLog(`signal received: ${message.type}`, summarizeMessage(message));
     connected.value = true;
-    await engine.handleSignal(message);
-    await handleAppMessage(message);
+    return processSignalMessage(message);
   });
 
   engine.onIncoming(async (meta, from) => {
-    const ok = await confirmIncomingTransfer(from, meta, t.value.receivePrompt);
+    const ok = await confirmIncomingTransfer(from, meta, t.value.receivePrompt, 'p2p');
     if (ok) enableWakeLock();
     return ok;
   });
@@ -503,6 +581,35 @@ function dedupeDevices(list: DeviceRecord[]) {
     if (!current || device.lastSeen > current.lastSeen) byKey.set(key, device);
   }
   return [...byKey.values()].sort((a, b) => b.lastSeen - a.lastSeen);
+}
+
+async function processSignalMessage(message: SignalingMessage) {
+  if (message.type === 'desktop-session-close') {
+    signaling.close();
+    window.setTimeout(() => {
+      window.close();
+      window.location.replace('about:blank');
+    }, 20);
+    return;
+  }
+  try {
+    await engine.handleSignal(message);
+  } catch (error) {
+    addLog('p2p signal processing failed', {
+      type: message.type,
+      transferId: 'transferId' in message ? message.transferId : undefined,
+      error: errorMessage(error)
+    }, 'error');
+  }
+  try {
+    await handleAppMessage(message);
+  } catch (error) {
+    addLog('application signal processing failed', {
+      type: message.type,
+      transferId: 'transferId' in message ? message.transferId : undefined,
+      error: errorMessage(error)
+    }, 'error');
+  }
 }
 
 async function handleAppMessage(message: SignalingMessage) {
@@ -748,7 +855,10 @@ async function sendSelectedFiles(target: DeviceRecord, files: File[]) {
   }
 
   const totalSize = files.reduce((sum, file) => sum + file.size, 0);
-  const plan = createSendPlan(files);
+  const plan = createBatchTransferPlan(files, {
+    maxFileSize: SMALL_BATCH_MAX_FILE,
+    maxBatchSize: SMALL_BATCH_MAX_TOTAL
+  });
   const batchId = createTransferId();
   addLog('batch files selected', {
     target: target.id,
@@ -830,7 +940,7 @@ async function sendSelectedFile(target: DeviceRecord, file: File, batchMeta?: Tr
 async function handleDirectTransferRequest(from: string, meta: FileMeta) {
   addLog('direct request received', { from, transferId: meta.transferId, file: meta.name, size: meta.size });
   if (rejectDuplicateIncoming(from, meta, 'direct')) return;
-  const ok = await confirmIncomingTransfer(from, meta, t.value.receiveLargePrompt);
+  const ok = await confirmIncomingTransfer(from, meta, t.value.receiveLargePrompt, 'direct');
   if (!ok) {
     signaling.send({ type: 'direct-transfer-reject', to: from, transferId: meta.transferId, reason: t.value.receiverRejected });
     return;
@@ -873,14 +983,7 @@ async function handleBatchTransferRequest(from: string, message: Extract<Signali
     return;
   }
 
-  const accepted = window.confirm(
-    `${t.value.receiveBatchPrompt} (${message.fileCount} files, ${formatBytes(message.totalBytes)})?`
-  );
-  storeIncomingBatchApproval(key, {
-    accepted,
-    transferIds: new Set(),
-    timer: 0
-  });
+  const accepted = await confirmIncomingBatch(from, message);
   signaling.send({
     type: accepted ? 'batch-transfer-accept' : 'batch-transfer-reject',
     to: from,
@@ -899,7 +1002,7 @@ async function handleBatchTransferRequest(from: string, message: Extract<Signali
 async function handleRelayTransferRequest(from: string, meta: FileMeta) {
   addLog('relay request received', { from, transferId: meta.transferId, file: meta.name, size: meta.size });
   if (rejectDuplicateIncoming(from, meta, 'relay')) return;
-  const ok = await confirmIncomingTransfer(from, meta, t.value.receiveLargePrompt);
+  const ok = await confirmIncomingTransfer(from, meta, t.value.receiveLargePrompt, 'relay');
   if (!ok) {
     signaling.send({ type: 'relay-transfer-reject', to: from, transferId: meta.transferId, reason: t.value.receiverRejected });
     return;
@@ -928,12 +1031,25 @@ async function handleRelayTransferRequest(from: string, meta: FileMeta) {
   triggerBrowserDownload(absoluteUrl, meta.name);
 }
 
-async function confirmIncomingTransfer(from: string, meta: FileMeta, promptLabel: string) {
+async function confirmIncomingTransfer(from: string, meta: FileMeta, promptLabel: string, kind: Exclude<IncomingPromptKind, 'batch'>) {
   // batchTotal is the number of actual transfer jobs, not the number of files.
   // Several small files can be packaged into one ZIP, so a real batch can have
   // batchTotal === 1. batchId is the authoritative batch marker.
   if (!isBatchTransferMeta(meta)) {
-    return window.confirm(`${promptLabel} ${meta.name} (${formatBytes(meta.size)})?`);
+    addLog('incoming prompt queued', {
+      from,
+      kind,
+      transferId: meta.transferId,
+      file: meta.name,
+      size: meta.size
+    });
+    return enqueueIncomingPrompt({
+      key: createIncomingPromptKey(kind, from, meta.transferId),
+      from,
+      kind,
+      meta,
+      promptLabel
+    });
   }
 
   const key = createIncomingBatchKey(from, meta.batchId);
@@ -951,15 +1067,44 @@ async function confirmIncomingTransfer(from: string, meta: FileMeta, promptLabel
       duplicate,
       approvedTransferCount: existing.transferIds.size
     }, existing.accepted ? 'info' : 'warn');
+    if (kind === 'p2p' && !existing.accepted) return false;
+    if (kind === 'p2p') {
+      try {
+        await engine.prepareIncomingTransfer(meta);
+      } catch (error) {
+        addLog('batch p2p receive preparation failed', {
+          from,
+          transferId: meta.transferId,
+          error: errorMessage(error)
+        }, 'warn');
+        return false;
+      }
+    }
     return existing.accepted;
   }
 
-  const accepted = window.confirm(`${promptLabel} ${meta.name} (${formatBytes(meta.size)})?`);
-  storeIncomingBatchApproval(key, {
-    accepted,
-    transferIds: new Set([meta.transferId]),
-    timer: 0
+  const accepted = await enqueueIncomingPrompt({
+    key: createIncomingPromptKey('batch', from, meta.batchId),
+    from,
+    kind: 'batch',
+    meta,
+    promptLabel,
+    fileCount: meta.batchTotal,
+    totalBytes: meta.size
   });
+  recordIncomingBatchApproval(key, accepted, meta.transferId);
+  if (accepted && kind === 'p2p') {
+    try {
+      await engine.prepareIncomingTransfer(meta);
+    } catch (error) {
+      addLog('batch p2p receive preparation failed', {
+        from,
+        transferId: meta.transferId,
+        error: errorMessage(error)
+      }, 'warn');
+      return false;
+    }
+  }
   addLog(accepted ? 'batch request approval created' : 'batch request rejection created', {
     from,
     batchId: meta.batchId,
@@ -969,6 +1114,132 @@ async function confirmIncomingTransfer(from: string, meta: FileMeta, promptLabel
     approvedTransferCount: 1
   }, accepted ? 'info' : 'warn');
   return accepted;
+}
+
+async function confirmIncomingBatch(from: string, message: Extract<SignalingMessage, { type: 'batch-transfer-request' }>) {
+  const key = createIncomingBatchKey(from, message.batchId);
+  const accepted = await enqueueIncomingPrompt({
+    key: createIncomingPromptKey('batch', from, message.batchId),
+    from,
+    kind: 'batch',
+    promptLabel: t.value.receiveBatchPrompt,
+    fileCount: message.fileCount,
+    totalBytes: message.totalBytes
+  });
+  recordIncomingBatchApproval(key, accepted);
+  addLog(accepted ? 'batch approval accepted' : 'batch approval rejected', {
+    from,
+    batchId: message.batchId,
+    batchTotal: message.batchTotal,
+    fileCount: message.fileCount,
+    totalBytes: message.totalBytes
+  }, accepted ? 'info' : 'warn');
+  return accepted;
+}
+
+function createIncomingPromptKey(kind: IncomingPromptKind, from: string, id: string) {
+  return `${kind}:${from}:${id}`;
+}
+
+function enqueueIncomingPrompt(input: Omit<IncomingPrompt, 'preparing' | 'resolve' | 'settled' | 'error'>) {
+  const existing = pendingIncomingPrompts.get(input.key);
+  if (existing) {
+    addLog('incoming prompt reused', {
+      key: input.key,
+      from: input.from,
+      kind: input.kind,
+      transferId: input.meta?.transferId
+    });
+    return existing;
+  }
+
+  const promise = new Promise<boolean>(resolve => {
+    incomingPrompts.value = [
+      ...incomingPrompts.value,
+      { ...input, preparing: false, resolve }
+    ];
+  });
+  pendingIncomingPrompts.set(input.key, promise);
+  addLog('incoming prompt shown', {
+    key: input.key,
+    from: input.from,
+    kind: input.kind,
+    transferId: input.meta?.transferId,
+    file: input.meta?.name
+  });
+  return promise;
+}
+
+function settleIncomingPrompt(prompt: IncomingPrompt, accepted: boolean) {
+  if (prompt.settled) return;
+  prompt.settled = true;
+  incomingPrompts.value = incomingPrompts.value.filter(item => item !== prompt);
+  pendingIncomingPrompts.delete(prompt.key);
+  addLog(accepted ? 'incoming prompt accepted' : 'incoming prompt rejected', {
+    key: prompt.key,
+    from: prompt.from,
+    kind: prompt.kind,
+    transferId: prompt.meta?.transferId,
+    file: prompt.meta?.name
+  }, accepted ? 'info' : 'warn');
+  prompt.resolve(accepted);
+}
+
+async function acceptActiveIncomingPrompt() {
+  const prompt = activeIncomingPrompt.value;
+  if (!prompt || prompt.preparing || prompt.settled) return;
+  prompt.error = undefined;
+  prompt.preparing = true;
+  try {
+    if (prompt.kind === 'p2p' && prompt.meta) {
+      await engine.prepareIncomingTransfer(prompt.meta);
+    }
+    settleIncomingPrompt(prompt, true);
+  } catch (error) {
+    prompt.preparing = false;
+    prompt.error = errorMessage(error);
+    // The sender is already waiting for this decision. Leaving the promise
+    // pending makes the sender look frozen until its timeout expires.
+    settleIncomingPrompt(prompt, false);
+    addLog('incoming transfer preparation failed', {
+      from: prompt.from,
+      transferId: prompt.meta?.transferId,
+      kind: prompt.kind,
+      error: errorMessage(error)
+    }, 'warn');
+  }
+}
+
+function rejectActiveIncomingPrompt() {
+  const prompt = activeIncomingPrompt.value;
+  if (!prompt || prompt.preparing || prompt.settled) return;
+  settleIncomingPrompt(prompt, false);
+}
+
+function removeIncomingPromptForTransfer(transferId: string) {
+  for (const prompt of [...incomingPrompts.value]) {
+    if (prompt.meta?.transferId === transferId) settleIncomingPrompt(prompt, false);
+  }
+}
+
+function clearIncomingPrompts() {
+  for (const prompt of [...incomingPrompts.value]) settleIncomingPrompt(prompt, false);
+  pendingIncomingPrompts.clear();
+}
+
+function recordIncomingBatchApproval(key: string, accepted: boolean, transferId?: string) {
+  const existing = incomingBatchApprovals.get(key);
+  if (existing) {
+    existing.accepted = accepted;
+    if (transferId) existing.transferIds.add(transferId);
+    refreshIncomingBatchApproval(key, existing);
+    return;
+  }
+  storeIncomingBatchApproval(key, {
+    accepted,
+    transferIds: transferId ? new Set([transferId]) : new Set(),
+    timer: 0
+  });
 }
 
 function createIncomingBatchKey(from: string, batchId: string) {
@@ -1572,6 +1843,7 @@ function handleRemoteCancel(transferId: string, from: string, reason?: string) {
     return;
   }
   addLog('remote transfer cancelled', { transferId, from, reason }, 'warn');
+  removeIncomingPromptForTransfer(transferId);
   clearIncomingBatchApprovalForTransfer(from, transferId);
   cancelledTransfers.add(transferId);
   autoDownloadedTransfers.add(transferId);
@@ -1581,6 +1853,7 @@ function handleRemoteCancel(transferId: string, from: string, reason?: string) {
   rejectPending(pendingDirectAccepts, transferId, reason || t.value.remoteCancelled);
   rejectPending(pendingRelayAccepts, transferId, reason || t.value.remoteCancelled);
   rejectRelayCompletion(transferId, reason || t.value.remoteCancelled);
+  engine.cancelTransfer(transferId, reason || t.value.remoteCancelled);
   markCancelled(transferId, reason || t.value.remoteCancelled, from);
   disableWakeLock();
 }
@@ -1642,38 +1915,6 @@ function wasLastSendCancelledOrFailed(targetId: string, file: File) {
   const candidates = [...progress.value.values()].filter(item => item.direction === 'send' && item.peerId === targetId && item.fileName === file.name && item.totalBytes === file.size);
   const latest = candidates.at(-1);
   return Boolean(latest?.done && (latest.cancelled || (latest.bytesTransferred < latest.totalBytes)));
-}
-
-function createSendPlan(files: File[]) {
-  const plan: Array<File | File[]> = [];
-  let smallBatch: File[] = [];
-  let smallBatchSize = 0;
-
-  const flushSmallBatch = () => {
-    if (smallBatch.length === 1) {
-      plan.push(smallBatch[0]);
-    } else if (smallBatch.length > 1) {
-      plan.push([...smallBatch]);
-    }
-    smallBatch = [];
-    smallBatchSize = 0;
-  };
-
-  for (const file of files) {
-    const isSmall = file.size <= SMALL_BATCH_MAX_FILE;
-    if (!isSmall) {
-      flushSmallBatch();
-      plan.push(file);
-      continue;
-    }
-
-    if (smallBatchSize + file.size > SMALL_BATCH_MAX_TOTAL) flushSmallBatch();
-    smallBatch.push(file);
-    smallBatchSize += file.size;
-  }
-
-  flushSmallBatch();
-  return plan;
 }
 
 function trackActiveSend(targetId: string, file: File, mode: 'direct' | 'relay', transferId: string) {
@@ -2274,6 +2515,7 @@ function cleanup() {
   activePeers.clear();
   activeSendKeys.clear();
   clearIncomingBatchApprovals();
+  clearIncomingPrompts();
   incomingPromptKeys.clear();
   activeTransferKeys.clear();
   relayStateCache.clear();

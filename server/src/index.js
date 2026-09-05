@@ -2,14 +2,13 @@ import express from 'express';
 import http, { createServer } from 'node:http';
 import https from 'node:https';
 import { once } from 'node:events';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { constants, createWriteStream } from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { PassThrough, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { SignalingHub } from './signaling/SignalingHub.js';
 import { MdnsDiscovery } from './discovery/MdnsDiscovery.js';
@@ -17,9 +16,10 @@ import { NetworkProber } from './network/NetworkProber.js';
 import { RelayBufferPool } from './relay/RelayBufferPool.js';
 import { Logger } from './Logger.js';
 
+const moduleDirectory = path.dirname(path.resolve(process.argv[1] || process.cwd()));
 const __dirname = process.env.CROSSLAN_SERVER_ROOT
   ? path.resolve(process.env.CROSSLAN_SERVER_ROOT)
-  : path.dirname(fileURLToPath(import.meta.url));
+  : moduleDirectory;
 const port = Number(process.env.PORT || 6100);
 const httpsPort = Number(process.env.HTTPS_PORT || 8443);
 const httpsKeyPath = process.env.CROSSLAN_HTTPS_KEY || '';
@@ -30,6 +30,8 @@ const serverInstanceId = randomUUID();
 const defaultSaveDir = process.env.CROSSLAN_SAVE_DIR || path.join(os.homedir(), 'Downloads', 'CrossLAN');
 const configPath = process.env.CROSSLAN_CONFIG || path.join(os.homedir(), '.crosslan.json');
 const storageSettings = { saveDir: defaultSaveDir };
+const desktopSessionToken = String(process.env.CROSSLAN_DESKTOP_SESSION_TOKEN || '').trim();
+const DESKTOP_PAGE_CLOSED_MARKER = 'CrossLAN desktop page closed';
 const DIRECT_UPLOAD_LOG_INTERVAL_MS = 30000;
 const RELAY_UPLOAD_LOG_INTERVAL_MS = 5000;
 const DIRECT_UPLOAD_WRITE_BUFFER = 8 * 1024 * 1024;
@@ -53,6 +55,7 @@ const server = createServer(HTTP_SERVER_OPTIONS, app);
 const logger = new Logger();
 let activeServer = server;
 let redirectServer = null;
+let shutdownPromise = null;
 const wss = new WebSocketServer({ noServer: true });
 const networkProber = new NetworkProber();
 const relaySessions = new Map();
@@ -87,6 +90,49 @@ app.options('/api/health', (req, res) => {
 app.get('/api/health', (req, res) => {
   setHealthCors(res);
   res.json({ ok: true, name: 'CrossLAN', deploymentMode, instanceId: serverInstanceId, now: Date.now() });
+});
+
+app.post('/api/desktop/session/claim', (req, res) => {
+  if (!desktopSessionToken) {
+    res.status(404).json({ ok: false, message: 'Desktop session control is disabled.' });
+    return;
+  }
+  if (!isDesktopSessionTokenValid(req.body?.token)) {
+    res.status(403).json({ ok: false, message: 'Invalid desktop session token.' });
+    return;
+  }
+
+  res.json({ ok: true });
+});
+
+app.post('/api/desktop/session/close', (req, res) => {
+  if (!desktopSessionToken) {
+    res.status(404).json({ ok: false, message: 'Desktop session control is disabled.' });
+    return;
+  }
+  if (!isDesktopSessionTokenValid(req.body?.token)) {
+    res.status(403).json({ ok: false, message: 'Invalid desktop session token.' });
+    return;
+  }
+
+  // This is a browser-state notification only. Closing a browser tab must
+  // never stop the tray-managed service.
+  logger.ready(DESKTOP_PAGE_CLOSED_MARKER);
+  res.json({ ok: true, ignored: true });
+});
+
+app.post('/api/desktop/session/terminate', (req, res) => {
+  if (!desktopSessionToken) {
+    res.status(404).json({ ok: false, message: 'Desktop session control is disabled.' });
+    return;
+  }
+  if (!isDesktopSessionTokenValid(req.body?.token)) {
+    res.status(403).json({ ok: false, message: 'Invalid desktop session token.' });
+    return;
+  }
+
+  broadcastDesktopSessionClose('desktop-exit');
+  res.json({ ok: true });
 });
 
 function setHealthCors(res) {
@@ -611,44 +657,52 @@ app.get('*', (req, res) => {
 const hub = new SignalingHub({ wss, mdns, networkProber, deploymentMode, serverInstanceId, logger });
 server.on('upgrade', handleUpgrade);
 
-try {
-  if (httpsKeyPath && httpsCertPath) {
-    const tlsOptions = {
-      key: await fs.readFile(httpsKeyPath),
-      cert: await fs.readFile(httpsCertPath)
-    };
-    activeServer = https.createServer({ ...HTTP_SERVER_OPTIONS, ...tlsOptions }, app);
-    activeServer.on('upgrade', handleUpgrade);
-    configureServer(activeServer);
+async function startConfiguredServer() {
+  try {
+    if (httpsKeyPath && httpsCertPath) {
+      const tlsOptions = {
+        key: await fs.readFile(httpsKeyPath),
+        cert: await fs.readFile(httpsCertPath)
+      };
+      activeServer = https.createServer({ ...HTTP_SERVER_OPTIONS, ...tlsOptions }, app);
+      activeServer.on('upgrade', handleUpgrade);
+      configureServer(activeServer);
 
-    if (shouldRedirectHttp) {
-      redirectServer = http.createServer({ noDelay: true }, (req, res) => {
-        const host = String(req.headers.host || '').replace(/:\d+$/, `:${httpsPort}`);
-        res.writeHead(308, { location: `https://${host}${req.url || '/'}` });
-        res.end();
-      });
-      configureServer(redirectServer);
-      startServer(redirectServer, port, 'HTTP redirect', false);
+      if (shouldRedirectHttp) {
+        redirectServer = http.createServer({ noDelay: true }, (req, res) => {
+          const host = String(req.headers.host || '').replace(/:\d+$/, `:${httpsPort}`);
+          res.writeHead(308, { location: `https://${host}${req.url || '/'}` });
+          res.end();
+        });
+        configureServer(redirectServer);
+        startServer(redirectServer, port, 'HTTP redirect', false);
+      }
+
+      startServer(activeServer, httpsPort, 'HTTPS', true);
+    } else {
+      configureServer(server);
+      startServer(server, port, 'HTTP', true);
     }
-
-    startServer(activeServer, httpsPort, 'HTTPS', true);
-  } else {
-    configureServer(server);
-    startServer(server, port, 'HTTP', true);
+  } catch (error) {
+    logger.error(`CrossLAN failed to configure HTTPS: ${error instanceof Error ? error.message : error}`);
+    process.exit(1);
   }
-} catch (error) {
-  logger.error(`CrossLAN failed to configure HTTPS: ${error instanceof Error ? error.message : error}`);
-  process.exit(1);
 }
 
+void startConfiguredServer();
+
 const shutdown = async () => {
-  await mdns.stop();
-  hub.close();
-  await Promise.all([
-    closeServer(activeServer),
-    redirectServer ? closeServer(redirectServer) : Promise.resolve()
-  ]);
-  process.exit(0);
+  if (shutdownPromise) return shutdownPromise;
+  shutdownPromise = (async () => {
+    await mdns.stop();
+    hub.close();
+    await Promise.all([
+      closeServer(activeServer),
+      redirectServer ? closeServer(redirectServer) : Promise.resolve()
+    ]);
+    process.exit(0);
+  })();
+  return shutdownPromise;
 };
 
 process.on('SIGINT', shutdown);
@@ -698,6 +752,20 @@ function startServer(targetServer, listenPort, label, startDiscovery) {
 
 function closeServer(targetServer) {
   return new Promise(resolve => targetServer.close(resolve));
+}
+
+function isDesktopSessionTokenValid(value) {
+  if (!desktopSessionToken) return false;
+  const expected = Buffer.from(desktopSessionToken, 'utf8');
+  const actual = Buffer.from(String(value || ''), 'utf8');
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
+
+function broadcastDesktopSessionClose(reason) {
+  const message = JSON.stringify({ type: 'desktop-session-close', reason });
+  for (const client of wss.clients) {
+    if (client.readyState === client.OPEN) client.send(message);
+  }
 }
 
 function broadcastRelayProgress(payload) {

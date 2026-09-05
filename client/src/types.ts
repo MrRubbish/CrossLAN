@@ -50,9 +50,13 @@ export interface TransferProgress {
 export type SignalingMessage =
   | { type: 'hello'; device: DeviceRecord; serverIps: string[]; serverMode?: ServerMode }
   | { type: 'device-list'; devices: DeviceRecord[]; mdnsPeers?: DeviceRecord[] }
-  | { type: 'offer'; from: string; to?: string; description: RTCSessionDescriptionInit; fileMeta?: FileMeta }
-  | { type: 'answer'; from: string; to?: string; description: RTCSessionDescriptionInit }
-  | { type: 'ice-candidate'; from: string; to?: string; candidate: RTCIceCandidateInit }
+  | { type: 'desktop-session-close'; reason?: string }
+  | { type: 'offer'; from: string; to?: string; transferId?: string; description: RTCSessionDescriptionInit; fileMeta?: FileMeta }
+  | { type: 'answer'; from: string; to?: string; transferId?: string; description: RTCSessionDescriptionInit }
+  | { type: 'ice-candidate'; from: string; to?: string; transferId?: string; candidate: RTCIceCandidateInit }
+  | { type: 'p2p-transfer-request'; from: string; to?: string; fileMeta: FileMeta }
+  | { type: 'p2p-transfer-accept'; from: string; to?: string; transferId: string }
+  | { type: 'p2p-transfer-reject'; from: string; to?: string; transferId: string; reason?: string }
   | { type: 'transfer-accept'; from: string; to?: string; transferId: string }
   | { type: 'transfer-reject'; from: string; to?: string; transferId: string; reason?: string }
   | { type: 'direct-transfer-request'; from: string; to?: string; fileMeta: FileMeta }

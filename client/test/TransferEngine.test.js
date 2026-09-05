@@ -129,6 +129,34 @@ test('incoming P2P save preparation failure sends a rejection to the sender', as
   assert.equal(messagesOfType(signaling, 'p2p-transfer-reject')[0].transferId, meta.transferId);
 });
 
+test('batch P2P preparation uses one browser download without reopening the save picker', async () => {
+  installBrowserGlobals();
+  let pickerCalls = 0;
+  window.isSecureContext = true;
+  window.showSaveFilePicker = async () => {
+    pickerCalls += 1;
+    throw new Error('The batch must not open the native save picker.');
+  };
+  const signaling = createSignaling();
+  const engine = new TransferEngine(signaling, () => 'receiver');
+  const meta = {
+    transferId: 'batch-p2p-1',
+    name: 'CrossLAN-batch.zip',
+    size: 16 * 1024 * 1024,
+    type: 'application/zip',
+    lastModified: 1,
+    batchId: 'batch-1',
+    batchIndex: 0,
+    batchTotal: 1
+  };
+
+  await engine.prepareIncomingTransfer(meta);
+
+  assert.equal(pickerCalls, 0);
+  assert.equal(engine.preparedReceiveStates.get(meta.transferId)?.mode, 'blob');
+  engine.cancelTransfer(meta.transferId);
+});
+
 test('a synchronous incoming P2P decision error still sends a rejection', async () => {
   installBrowserGlobals();
   FakePeerConnection.reset();

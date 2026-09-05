@@ -11,6 +11,7 @@ const RECEIVER_PROGRESS_ACK_INTERVAL_MS = 150;
 const PEER_CONNECTION_TIMEOUT_MS = 120000;
 const DISCONNECTED_GRACE_MS = 10000;
 const HTTP_BLOB_FALLBACK_LIMIT = 512 * 1024 * 1024;
+const BATCH_BLOB_RECEIVE_LIMIT = 64 * 1024 * 1024;
 
 type ProgressHandler = (progress: TransferProgress) => void;
 type IncomingHandler = (meta: FileMeta, from: string) => Promise<boolean> | boolean;
@@ -926,6 +927,13 @@ export class TransferEngine {
       hasSavePicker: Boolean(window.showSaveFilePicker),
       fromUserGesture
     });
+    // Batch approval is a single user action that happens before individual
+    // P2P jobs arrive. Keep bounded batch jobs in memory so later jobs do not
+    // reopen the native save picker or require another user gesture.
+    if (meta.batchId && meta.size <= BATCH_BLOB_RECEIVE_LIMIT) {
+      this.emitDebug('p2p receive mode: batch blob', { transferId: meta.transferId });
+      return { mode: 'blob', meta, bytes: 0, chunks: [], lastAckAt: 0, lastAckBytes: 0 };
+    }
     if (window.isSecureContext && window.showSaveFilePicker && fromUserGesture) {
       const handle = await window.showSaveFilePicker({
         suggestedName: meta.name,
