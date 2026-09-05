@@ -22,7 +22,6 @@ CrossLAN 会根据文件大小和接收目标自动选择传输路线：
 
 ## 目录
 
-- [已验证范围](#已验证范围)
 - [传输方式](#传输方式)
 - [安装](#安装)
   - [Windows Node.js 部署](#windows-nodejs-部署)
@@ -33,31 +32,10 @@ CrossLAN 会根据文件大小和接收目标自动选择传输路线：
   - [取消与任务清理](#取消与任务清理)
   - [上传限速](#上传限速)
 - [参数及配置](#参数及配置)
-- [测试](#测试)
 - [项目结构](#项目结构)
 - [已实现的能力](#已实现的能力)
 - [常见问题](#常见问题)
 - [已知限制](#已知限制)
-
-## 已验证范围
-
-截至 `2026-07-19`，验证结果分为两类。
-
-### 实际设备验证
-
-- Windows Node.js 作为服务主机，Windows PC 和 Android Chromium 浏览器接入同一局域网。
-- 单文件 WebRTC 传输、GB 级文件服务主机直存和普通浏览器 Relay 接收。
-- Windows 作为服务主机的 Node.js 部署和后台启动。
-
-### 自动化验证
-
-- 小文件 ZIP 批次、大小文件混合选择、传输排队和批次接收授权。
-- WebRTC、HTTP 直存和 Relay 的取消、背压与资源清理。
-- TypeScript 检查、客户端传输测试、服务端单元测试和真实 HTTP 流式烟测。
-
-自动化覆盖不等同于所有浏览器组合均已完成真机验收。混合大小文件批次的最新接收授权修改已通过回归测试，但仍应在发布前用目标手机浏览器复测一次。
-
-macOS 和 Linux 尚未做实机验收，因此暂不把这两个平台的原生 Node.js 脚本列为推荐安装方式。
 
 ## 传输方式
 
@@ -80,8 +58,6 @@ cd CrossLAN
 ```
 
 ### Windows Node.js 部署
-
-这是当前验证最完整的部署方式。
 
 要求：
 
@@ -245,47 +221,23 @@ npm start
 
 不要使用端口 `6000`，Chromium 系浏览器通常将其列为不安全端口并拒绝访问。项目默认使用 `6100`。
 
-## 测试
-
-发布前检查：
-
-```powershell
-npm run check
-npm run build
-npm --workspace server run test:relay-http
-```
-
-测试内容：
-
-- TypeScript 类型检查。
-- WebRTC 排队、`256 KB` 分块、批次元数据、背压恢复和取消测试。
-- Relay 缓冲池容量、共享预算、等待唤醒和关闭测试。
-- WebSocket 信令路由、重复连接和传输关系测试。
-- 真实 HTTP Relay：并行上传和下载 `24 MB` 数据，校验字节、SHA-256、最大缓冲和完成状态。
-- 真实 HTTP 直存：写入 `8 MB` 数据，校验保存文件内容并清理临时目录。
-- Vite 生产构建。
-
-真实 HTTP 烟测会自行启动临时端口，不依赖正在运行的 CrossLAN 服务。
-
 ## 项目结构
 
 ```text
 CrossLAN/
 ├─ client/
-│  ├─ src/
-│  │  ├─ App.vue                     页面、设备和传输编排
-│  │  ├─ identity/DeviceIdentity.ts  浏览器设备标识
-│  │  ├─ signaling/                  WebSocket 客户端
-│  │  ├─ storage/                    IndexedDB 设备记录
-│  │  └─ transfer/                   WebRTC、批次和背压
-│  └─ test/                          客户端传输测试
+│  └─ src/
+│     ├─ App.vue                     页面、设备和传输编排
+│     ├─ identity/DeviceIdentity.ts  浏览器设备标识
+│     ├─ signaling/                  WebSocket 客户端
+│     ├─ storage/                    IndexedDB 设备记录
+│     └─ transfer/                   WebRTC、批次和背压
 ├─ server/
-│  ├─ src/
-│  │  ├─ index.js                    HTTP、直存和 Relay
-│  │  ├─ signaling/                  设备连接和信令路由
-│  │  ├─ relay/RelayBufferPool.js    共享内存缓冲池
-│  │  └─ Logger.js                   服务日志
-│  └─ test/                          服务端测试和 HTTP 烟测
+│  └─ src/
+│     ├─ index.js                    HTTP、直存和 Relay
+│     ├─ signaling/                  设备连接和信令路由
+│     ├─ relay/RelayBufferPool.js    共享内存缓冲池
+│     └─ Logger.js                   服务日志
 └─ scripts/
    └─ windows/                       Windows Node.js 启停脚本
 ```
@@ -343,7 +295,6 @@ PC 使用 `Ctrl+F5`；手机关闭旧标签页后重新打开。
 
 ## 已知限制
 
-- 混合大小文件批次的最新授权修改已有自动化回归覆盖，但尚未完成当前版本的目标手机真机复测。
 - 普通浏览器的大文件 Relay 仍经过服务主机，不是完全 P2P。
 - 普通浏览器的最终保存路径由浏览器和操作系统控制。
 - 移动系统可能暂停后台网页，后台传输只能尽力保持。
