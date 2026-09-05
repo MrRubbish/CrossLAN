@@ -2,8 +2,8 @@
 
 The helper scripts are grouped by platform:
 
-- `windows/`: PowerShell scripts and double-clickable CMD launchers for local Node, Docker, and Windows logon autostart.
-- `unix/`: Bash scripts for Linux and macOS local Node, Docker, and per-user autostart.
+- `windows/`: PowerShell scripts and double-clickable CMD launchers for local Node and Windows logon autostart.
+- `unix/`: Bash scripts for Linux and macOS local Node and per-user autostart.
 - `common/`: Cross-platform cleanup helpers for generated build files.
 
 Run scripts from the repository root so examples and relative paths stay predictable.
@@ -23,13 +23,6 @@ Install or remove logon autostart:
 .\scripts\windows\uninstall-autostart.ps1
 ```
 
-Start or stop Docker:
-
-```powershell
-.\scripts\windows\start-docker.ps1 -Port 6100
-.\scripts\windows\stop-docker.ps1
-```
-
 The `.cmd` launchers in `windows/` provide the same common actions by double-click.
 
 ## Linux And macOS
@@ -46,13 +39,6 @@ Install or remove per-user autostart:
 ```bash
 ./scripts/unix/install-autostart.sh --build --port 6100
 ./scripts/unix/uninstall-autostart.sh
-```
-
-Start or stop Docker:
-
-```bash
-./scripts/unix/start-docker.sh --port 6100
-./scripts/unix/stop-docker.sh
 ```
 
 ## Cleanup

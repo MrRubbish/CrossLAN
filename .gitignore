@@ -8,3 +8,9 @@ client/dist/
 .git-broken/
 /docker-data/
 /local-docs/
+/.dockerignore
+/Dockerfile
+/docker-compose.yml
+/scripts/unix/*-docker.sh
+/scripts/windows/*-docker.cmd
+/scripts/windows/*-docker.ps1
