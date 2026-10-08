@@ -1,0 +1,25 @@
+{
+  "name": "@crosslan/desktop",
+  "version": "1.0.14",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 1420 --strictPort",
+    "build": "tsc --noEmit && vite build",
+    "check": "tsc --noEmit",
+    "prepare:sidecar": "powershell -NoProfile -ExecutionPolicy Bypass -File ..\\scripts\\windows\\prepare-desktop-sidecar.ps1",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.8.0",
+    "@tauri-apps/plugin-dialog": "^2.7.3",
+    "lucide": "0.577.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.8.4",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11"
+  }
+}

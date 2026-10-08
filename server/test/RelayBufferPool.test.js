@@ -41,6 +41,29 @@ test('a session pauses at high water and resumes only at low water', async () =>
   pool.rollback('one', 1);
 });
 
+test('a rolling relay window resumes after a small refill margin', async () => {
+  const pool = new RelayBufferPool({
+    targetBytes: 32,
+    highWaterBytes: 64,
+    lowWaterBytes: 24,
+    refillBytes: 4,
+    totalBytes: 256
+  });
+  pool.register('one');
+  const initial = await pool.reserve('one', 64);
+  pool.commit('one', initial);
+
+  const waiting = pool.reserve('one', 4);
+  pool.release('one', 3);
+  assert.equal(await remainsPending(waiting), true);
+  assert.equal(pool.snapshot('one').resumeWaterBytes, 60);
+
+  pool.release('one', 1);
+  assert.equal(await waiting, 4);
+  pool.commit('one', 4);
+  assert.equal(pool.snapshot('one').bufferedBytes, 64);
+});
+
 test('the hot path reserves available capacity synchronously', () => {
   const pool = createPool();
   pool.register('one');

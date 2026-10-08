@@ -1,9 +1,9 @@
 import os from 'node:os';
 import { nanoid } from 'nanoid';
 
-const SIGNAL_TYPES = new Set(['offer', 'answer', 'ice-candidate', 'transfer-accept', 'transfer-reject', 'batch-transfer-request', 'batch-transfer-accept', 'batch-transfer-reject', 'direct-transfer-request', 'direct-transfer-accept', 'direct-transfer-reject', 'relay-transfer-request', 'relay-transfer-accept', 'relay-transfer-reject', 'relay-transfer-progress', 'relay-transfer-ready', 'relay-transfer-error', 'transfer-cancel']);
-const REQUEST_TYPES = new Set(['transfer-accept', 'direct-transfer-request', 'relay-transfer-request', 'offer']);
-const RESPONSE_TYPES = new Set(['transfer-accept', 'transfer-reject', 'direct-transfer-accept', 'direct-transfer-reject', 'relay-transfer-accept', 'relay-transfer-reject', 'answer']);
+const SIGNAL_TYPES = new Set(['p2p-transfer-request', 'p2p-transfer-accept', 'p2p-transfer-reject', 'p2p-transfer-cancel', 'offer', 'answer', 'ice-candidate', 'transfer-accept', 'transfer-reject', 'batch-transfer-request', 'batch-transfer-accept', 'batch-transfer-reject', 'direct-transfer-request', 'direct-transfer-accept', 'direct-transfer-reject', 'relay-transfer-request', 'relay-transfer-accept', 'relay-transfer-reject', 'relay-transfer-progress', 'relay-transfer-ready', 'relay-transfer-error', 'transfer-cancel']);
+const REQUEST_TYPES = new Set(['p2p-transfer-request', 'batch-transfer-request', 'direct-transfer-request', 'relay-transfer-request', 'offer']);
+const RESPONSE_TYPES = new Set(['p2p-transfer-accept', 'p2p-transfer-reject', 'batch-transfer-accept', 'batch-transfer-reject', 'transfer-accept', 'transfer-reject', 'direct-transfer-accept', 'direct-transfer-reject', 'relay-transfer-accept', 'relay-transfer-reject', 'answer']);
 const RECEIVER_FOLLOWUP_TYPES = new Set(['relay-transfer-progress', 'relay-transfer-ready', 'relay-transfer-error']);
 const ROUTE_TTL_MS = 30 * 60 * 1000;
 const SERVICE_HOST_DEVICE_ID = 'crosslan-service-host';
@@ -58,14 +58,17 @@ export class SignalingHub {
     }
 
     const hostUi = this.deploymentMode === 'docker' && (isHostUiClient(request) || this.hostUiDeviceIds.has(id));
+    const serviceHost = isServiceHostRequest(request, ip);
     if (hostUi) this.hostUiDeviceIds.add(id);
     const client = {
       connectionId,
       id,
       ip,
+      requestHost: getRequestHost(request),
       socket,
       userAgent: request.headers['user-agent'] || 'Unknown device',
-      canDirectSave: isDirectSaveClient(request) || isServiceHostRequest(request, ip),
+      canDirectSave: isDirectSaveClient(request) || serviceHost,
+      serviceHost,
       hostUi,
       lastSeen: Date.now(),
       connectedAt: Date.now()
@@ -99,8 +102,20 @@ export class SignalingHub {
 
     sender.lastSeen = Date.now();
 
+    if (message.type === 'transfer-state-request') {
+      const ids = Array.isArray(message.transferIds) ? message.transferIds.slice(0, 100) : [];
+      for (const id of ids) {
+        const route = this.transferRoutes.get(String(id));
+        if (!route?.lastStatus) continue;
+        if (this.getRouteClient(route, 'requester') === sender || this.getRouteClient(route, 'receiver') === sender) {
+          this.send(sender.socket, route.lastStatus);
+        }
+      }
+      return;
+    }
+
     if (message.type === 'device-list-request') {
-      this.send(sender.socket, { type: 'device-list', devices: this.getDevicesFor(sender.id) });
+      this.send(sender.socket, { type: 'device-list', devices: this.getDevicesFor(sender) });
       this.logger.debug('CrossLAN signal device-list request: from=' + sender.id + ' conn=' + sender.connectionId);
       return;
     }
@@ -120,8 +135,9 @@ export class SignalingHub {
     }
 
     const transferId = getTransferId(message);
-    if (transferId && REQUEST_TYPES.has(message.type)) {
+    if (transferId && REQUEST_TYPES.has(message.type) && !this.transferRoutes.has(transferId)) {
       this.transferRoutes.set(transferId, {
+        p2p: message.type === 'p2p-transfer-request',
         requesterConnectionId: sender.connectionId,
         requesterId: sender.id,
         receiverId: message.to,
@@ -177,6 +193,15 @@ export class SignalingHub {
   resolveTargets(sender, message, transferId) {
     const route = transferId ? this.transferRoutes.get(transferId) : null;
 
+    if (route?.p2p) {
+      const requester = this.getRouteClient(route, 'requester');
+      const receiver = this.getRouteClient(route, 'receiver');
+      if (sender !== requester && sender !== receiver) return [];
+      route.updatedAt = Date.now();
+      const target = sender === requester ? receiver : requester;
+      return isOpenClient(target) ? [target] : [];
+    }
+
     if (this.isServiceHostDirectRequest(message)) {
       return [...this.clients.values()]
         .filter(client => client.connectionId !== sender.connectionId && client.hostUi && client.canDirectSave && isOpenClient(client))
@@ -185,8 +210,8 @@ export class SignalingHub {
     }
 
     if (route && message.type === 'transfer-cancel') {
-      const requester = this.clients.get(route.requesterConnectionId);
-      const receiver = route.receiverConnectionId ? this.clients.get(route.receiverConnectionId) : null;
+      const requester = this.getRouteClient(route, 'requester');
+      const receiver = this.getRouteClient(route, 'receiver');
       if (sender.connectionId === route.requesterConnectionId && isOpenClient(receiver)) return [receiver];
       if (sender.connectionId === route.receiverConnectionId && isOpenClient(requester)) return [requester];
       if (sender.id === route.requesterId && isOpenClient(receiver)) return [receiver];
@@ -194,12 +219,12 @@ export class SignalingHub {
     }
 
     if (route && RESPONSE_TYPES.has(message.type)) {
-      const requester = this.clients.get(route.requesterConnectionId);
+      const requester = this.getRouteClient(route, 'requester');
       if (isOpenClient(requester)) return [requester];
     }
 
     if (route && RECEIVER_FOLLOWUP_TYPES.has(message.type) && route.receiverConnectionId) {
-      const receiver = this.clients.get(route.receiverConnectionId);
+      const receiver = this.getRouteClient(route, 'receiver');
       if (isOpenClient(receiver)) return [receiver];
     }
 
@@ -216,7 +241,8 @@ export class SignalingHub {
     const id = String(deviceId || '');
     return [...this.clients.values()]
       .filter(client => client.id === id && client.connectionId !== excludeConnectionId && isOpenClient(client))
-      .sort((a, b) => b.lastSeen - a.lastSeen);
+      .sort(compareClientRecency)
+      .slice(0, 1);
   }
 
   removeClient(client, reason) {
@@ -229,23 +255,41 @@ export class SignalingHub {
     for (const client of this.clients.values()) {
       this.send(client.socket, {
         type: 'device-list',
-        devices: this.getDevicesFor(client.id),
+        devices: this.getDevicesFor(client),
         mdnsPeers: this.mdns.getPeers()
       });
     }
   }
 
-  getDevicesFor(selfId) {
-    const devicesById = new Map();
+  broadcastServiceRelocation(targetUrl, delayMs) {
+    const payload = {
+      type: 'service-relocating',
+      targetUrl,
+      delayMs,
+      issuedAt: Date.now()
+    };
+    let delivered = 0;
     for (const client of this.clients.values()) {
-      if (client.id === selfId || !isOpenClient(client)) continue;
+      if (!isOpenClient(client)) continue;
+      this.send(client.socket, payload);
+      delivered += 1;
+    }
+    return delivered;
+  }
+
+  getDevicesFor(self) {
+    const devicesByPresence = new Map();
+    const selfPresence = getClientPresenceKey(self);
+    for (const client of this.clients.values()) {
+      if (client.id === self.id || getClientPresenceKey(client) === selfPresence || !isOpenClient(client)) continue;
       if (client.hostUi) continue;
-      const current = devicesById.get(client.id);
-      if (!current || client.lastSeen > current.lastSeen) {
-        devicesById.set(client.id, publicDevice(client));
+      const presence = getClientPresenceKey(client);
+      const current = devicesByPresence.get(presence);
+      if (!current || compareClientRecency(client, current) < 0) {
+        devicesByPresence.set(presence, client);
       }
     }
-    return [...devicesById.values()];
+    return [...devicesByPresence.values()].map(publicDevice);
   }
 
   send(socket, payload) {
@@ -257,15 +301,27 @@ export class SignalingHub {
   broadcastToTransfer(transferId, payload) {
     const route = this.transferRoutes.get(String(transferId || ''));
     if (!route) return false;
-    const targets = [
-      this.clients.get(route.requesterConnectionId),
-      route.receiverConnectionId ? this.clients.get(route.receiverConnectionId) : null
-    ].filter(isOpenClient);
-    if (!targets.length) return false;
+    route.updatedAt = Date.now();
+    if (route.lastStatus && /-(complete|error)$/.test(route.lastStatus.type)) return true;
+    route.lastStatus = { ...payload };
+    const targets = new Set([
+      this.getRouteClient(route, 'requester'),
+      this.getRouteClient(route, 'receiver')
+    ].filter(isOpenClient));
     for (const target of targets) {
       this.send(target.socket, payload);
     }
     return true;
+  }
+
+  getRouteClient(route, role) {
+    const key = `${role}ConnectionId`;
+    const current = this.clients.get(route[key]);
+    if (isOpenClient(current)) return current;
+    // Rebind only a disconnected endpoint; another live tab keeps its route.
+    const replacement = this.getTargetsForDevice(route[`${role}Id`])[0];
+    if (replacement) route[key] = replacement.connectionId;
+    return replacement;
   }
 
   pruneTransferRoutes() {
@@ -306,10 +362,31 @@ function isOpenClient(client) {
   return Boolean(client?.socket && client.socket.readyState === client.socket.OPEN);
 }
 
+function getClientPresenceKey(client) {
+  if (client.serviceHost) {
+    return `crosslan-service-host\n${String(client.userAgent || '').trim().toLowerCase()}`;
+  }
+  return `${client.ip || ''}\n${String(client.userAgent || '').trim().toLowerCase()}`;
+}
+
+function compareClientRecency(a, b) {
+  const preferredHostDifference = Number(isPreferredServiceHostClient(b)) - Number(isPreferredServiceHostClient(a));
+  if (preferredHostDifference !== 0) return preferredHostDifference;
+  const seenDifference = Number(b.lastSeen || 0) - Number(a.lastSeen || 0);
+  if (seenDifference !== 0) return seenDifference;
+  return Number(b.connectedAt || 0) - Number(a.connectedAt || 0);
+}
+
+function isPreferredServiceHostClient(client) {
+  const advertisedIp = String(process.env.CROSSLAN_ADVERTISED_IP || '').trim().toLowerCase();
+  return Boolean(client.serviceHost && advertisedIp && client.requestHost === advertisedIp);
+}
+
 function publicDevice(client) {
+  const advertisedIp = String(process.env.CROSSLAN_ADVERTISED_IP || '').trim();
   return {
     id: client.id,
-    ip: client.ip,
+    ip: client.serviceHost && advertisedIp ? advertisedIp : client.ip,
     userAgent: client.userAgent,
     canDirectSave: client.canDirectSave,
     hostUi: client.hostUi,

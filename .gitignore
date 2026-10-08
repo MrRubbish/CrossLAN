@@ -8,3 +8,13 @@ client/dist/
 .git-broken/
 /docker-data/
 /local-docs/
+/.test-results/
+/.worktrees/
+/desktop/build/
+/desktop/dist/
+/desktop/src-tauri/target/
+/desktop/src-tauri/gen/
+/desktop/src-tauri/binaries/*
+!/desktop/src-tauri/binaries/.gitkeep
+__pycache__/
+*.pyc

@@ -1,20 +1,38 @@
 <template>
   <main class="min-h-screen bg-mist text-ink">
+    <ShareDialog v-if="shareDialogOpen" :addresses="shareAddresses" :labels="t.share" @close="shareDialogOpen = false" />
+    <div v-if="serviceRelocation" class="fixed inset-0 z-50 grid place-items-center bg-mist/95 px-5" role="status" aria-live="polite">
+      <section class="w-full max-w-sm rounded-md border border-line bg-panel p-6 text-center shadow-xl">
+        <div v-if="!serviceRelocation.failed" class="mx-auto h-9 w-9 animate-spin rounded-full border-2 border-line border-t-teal" aria-hidden="true"></div>
+        <h2 class="mt-4 text-lg font-800">{{ t.relocatingService }}</h2>
+        <p class="mt-2 text-sm text-ink/55">
+          {{ serviceRelocation.failed ? t.relocationFailed : t.relocationWaiting }}
+        </p>
+        <p class="mt-3 break-all text-xs text-ink/45">{{ serviceRelocation.targetUrl }}</p>
+        <a v-if="serviceRelocation.failed" class="tap mt-4 inline-flex border border-teal/30 bg-teal/10 px-4 py-2 text-sm font-800 text-teal" :href="serviceRelocation.redirectUrl">
+          {{ t.openNewAddress }}
+        </a>
+      </section>
+    </div>
     <section class="mx-auto max-w-5xl px-4 pb-10 pt-[env(safe-area-inset-top)] sm:px-6">
-      <header class="flex items-center justify-between gap-4 py-5">
+      <header class="site-header flex flex-wrap items-center justify-between gap-4 py-5">
         <div>
-          <h1 class="text-2xl font-800">CrossLAN</h1>
+          <h1 class="text-2xl font-800" translate="no">CrossLAN</h1>
           <p class="text-sm text-ink/60">{{ localStatus }}</p>
         </div>
-        <div class="flex items-center gap-2">
-          <button class="rounded-full border border-line bg-panel px-3 py-1 text-xs font-700 text-ink/55" type="button" :title="themeTitle" @click="cycleTheme">
-            {{ themeButtonLabel }}
-          </button>
-          <span class="rounded-full border border-line bg-panel px-3 py-1 text-xs font-700 text-ink/55">{{ protocolLabel }}</span>
-          <span class="rounded-full border px-3 py-1 text-xs font-700" :class="connected ? 'border-teal/25 bg-teal/8 text-teal' : 'border-coral/25 bg-coral/8 text-coral'">
-            {{ connected ? t.online : t.offline }}
-          </span>
-        </div>
+        <PageToolbar
+          v-model:theme="themePreference"
+          v-model:locale="localePreference"
+          :labels="t.toolbar"
+          :share-label="t.share.title"
+          :protocol-label="protocolLabel"
+          :connected="connected"
+          :status-label="connected ? t.online : t.offline"
+          @share="shareDialogOpen = true"
+        />
+        <button class="ui-surface ui-control mobile-share-button" type="button" :title="t.share.title" :aria-label="t.share.title" @click="shareDialogOpen = true">
+          <QrCode :size="18" aria-hidden="true" />
+        </button>
       </header>
 
       <div class="grid gap-4 lg:grid-cols-[1fr_340px]">
@@ -44,7 +62,7 @@
                   <p class="mt-1 text-sm text-ink/55">IP: {{ device.ip }}</p>
                   <p class="mt-1 break-all text-sm text-ink/55">{{ t.deviceId }}: {{ device.id }}</p>
                 </div>
-                <span class="shrink-0 whitespace-nowrap rounded px-2 py-1 text-xs font-700" :class="canDirectSaveTo(device) ? 'bg-teal/10 text-teal' : 'bg-ink/8 text-ink/50'">
+                <span class="shrink-0 whitespace-nowrap rounded-md px-2 py-1 text-xs font-700" :class="canDirectSaveTo(device) ? 'bg-teal/10 text-teal' : 'bg-ink/8 text-ink/50'">
                   {{ deviceReceiveModeLabel(device) }}
                 </span>
               </div>
@@ -69,7 +87,7 @@
               <button v-if="progressItems.length" class="tap border border-line px-3 py-1 text-xs font-800" type="button" @click="clearTransfers">{{ t.clearTransfers }}</button>
             </div>
             <div v-if="progressItems.length === 0" class="mt-3 text-sm text-ink/55">{{ t.noTransfers }}</div>
-            <div v-for="item in progressItems" :key="item.id" class="mt-3 rounded-md border border-line p-3">
+            <div v-for="item in progressItems" :key="item.id" class="transfer-task mt-3 rounded-md border border-line p-3" :data-transfer-id="item.id" :data-mode="item.mode" :data-done="item.done" :data-cancelled="Boolean(item.cancelled)" :data-bytes="item.bytesTransferred">
               <div class="flex items-center justify-between gap-3 text-sm font-700">
                 <span class="min-w-0 truncate">{{ item.fileName }}</span>
                 <div class="flex shrink-0 items-center gap-2">
@@ -77,8 +95,8 @@
                   <span>{{ Math.round(percent(item)) }}%</span>
                 </div>
               </div>
-              <div class="mt-2 h-2 overflow-hidden rounded-full bg-line">
-                <div class="h-full rounded-full bg-teal" :style="{ width: `${percent(item)}%` }"></div>
+              <div class="mt-2 h-2 overflow-hidden rounded-md bg-line">
+                <div class="h-full rounded-md bg-teal" :style="{ width: `${percent(item)}%` }"></div>
               </div>
               <p class="mt-2 text-xs text-ink/50">
                 {{ item.direction === 'send' ? t.send : t.receive }} | {{ modeLabel(item.mode) }} | {{ formatBytes(item.bytesTransferred) }} / {{ formatBytes(item.totalBytes) }}
@@ -86,18 +104,18 @@
               <p class="mt-1 text-xs text-ink/45">
                 {{ formatSpeedLine(item) }}
               </p>
-              <p v-if="item.statusText" class="mt-1 break-all text-xs" :class="item.done && item.bytesTransferred < item.totalBytes ? 'text-coral' : 'text-ink/45'">{{ item.statusText }}</p>
+              <p v-if="item.statusText" class="mt-1 break-all text-xs" :class="item.done && item.bytesTransferred < item.totalBytes ? 'text-coral' : 'text-ink/45'">{{ displayStoredMessage(item.statusText) }}</p>
               <a v-if="item.downloadUrl" class="tap mt-2 inline-flex border border-teal/30 bg-teal/10 px-3 py-2 text-xs font-800 text-teal" :href="item.downloadUrl" :download="item.fileName" target="_blank" rel="noopener" @click="logDownloadOpen(item)">{{ t.openDownload }}</a>
             </div>
           </section>
 
-          <section v-if="isServiceHost" class="panel p-4">
+          <section v-if="showStorageSettings" class="panel p-4">
             <p class="label">{{ t.storage }}</p>
             <h2 class="text-lg font-750">{{ t.saveDirectory }}</h2>
             <p class="mt-2 text-xs text-ink/50">{{ t.storageHint }}</p>
-            <input v-model="saveDirInput" class="mt-3 w-full rounded-md border border-line bg-panel px-3 py-2 text-sm text-ink" placeholder="/data/CrossLAN" />
+            <input v-model="saveDirInput" class="mt-3 w-full rounded-md border border-line bg-panel px-5 py-2 text-sm text-ink" placeholder="/data/CrossLAN" />
             <button class="tap mt-3 w-full bg-ink px-3 py-2 text-sm font-800 text-mist" @click="saveStorageDir">{{ t.savePath }}</button>
-            <p class="mt-2 break-all text-xs" :class="storageStatusOk ? 'text-teal' : 'text-coral'">{{ storageMessage }}</p>
+            <p class="mt-2 break-all text-xs" :class="storageStatusOk ? 'text-teal' : 'text-coral'">{{ displayStoredMessage(storageMessage) }}</p>
           </section>
 
           <section class="panel p-4">
@@ -108,10 +126,12 @@
               </div>
             </div>
             <div class="mt-4 space-y-3">
-              <label class="flex items-center gap-2 text-sm"><input v-model="bandwidthMode" value="unlimited" type="radio" /> {{ t.unlimited }}</label>
-              <label class="flex items-center gap-2 text-sm"><input v-model="bandwidthMode" value="manual" type="radio" /> {{ t.manual }}</label>
+              <div class="ui-segments" role="group" :aria-label="t.speedLimit">
+                <label><input v-model="bandwidthMode" name="bandwidth" value="unlimited" type="radio" /><span>{{ t.unlimited }}</span></label>
+                <label><input v-model="bandwidthMode" name="bandwidth" value="manual" type="radio" /><span>{{ t.manual }}</span></label>
+              </div>
               <label class="flex items-center overflow-hidden rounded-md border border-line bg-panel">
-                <input v-model.number="manualLimitMbps" :disabled="bandwidthMode !== 'manual'" type="number" min="1" class="min-w-0 flex-1 border-0 bg-transparent px-3 py-2 text-sm outline-none disabled:bg-line/30" />
+                <input v-model.number="manualLimitMbps" :disabled="bandwidthMode !== 'manual'" type="number" min="1" class="min-w-0 flex-1 border-0 bg-transparent px-5 py-2 text-sm outline-none disabled:bg-line/30" />
                 <span class="border-l border-line px-3 text-xs font-800 text-ink/55">{{ t.mbps }}</span>
               </label>
               <p class="text-xs text-ink/45">{{ t.uploadLimitHint }}</p>
@@ -125,16 +145,21 @@
 
 <script setup lang="ts">
 import NoSleep from 'nosleep.js';
+import { QrCode } from 'lucide-vue-next';
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import PageToolbar from './components/PageToolbar.vue';
+import ShareDialog from './components/ShareDialog.vue';
 import { DeviceIdentity } from './identity/DeviceIdentity';
 import { SignalingClient } from './signaling/SignalingClient';
+import { getShareAddressOptions } from './sharing/ShareAddress';
+import { normalizeLocalePreference, resolveUiLocale, type LocalePreference } from './preferences/LocalePreference';
 import { DeviceStore } from './storage/DeviceStore';
 import { isBatchTransferMeta } from './transfer/BatchTransfer';
 import { TransferEngine } from './transfer/TransferEngine';
+import { BlobReceiveSink } from './transfer/ReceiveSink';
+import { P2P_MAX_FILE_SIZE, resolveAutomaticTransferRoute } from './transfer/TransferPolicy';
 import type { BandwidthMode, BatchTransferSummary, DeviceRecord, FileMeta, LocalIdentity, ServerMode, SignalingMessage, TransferBatchMeta, TransferProgress } from './types';
 
-const P2P_MAX_FILE_SIZE = 32 * 1024 * 1024;
-const DIRECT_SAVE_THRESHOLD = P2P_MAX_FILE_SIZE;
 const SMALL_BATCH_MAX_TOTAL = 64 * 1024 * 1024;
 const SMALL_BATCH_MAX_FILE = P2P_MAX_FILE_SIZE;
 const ACCEPT_TIMEOUT_MS = 120000;
@@ -144,10 +169,15 @@ const ACCEPT_TIMEOUT_MS = 120000;
 const INCOMING_BATCH_APPROVAL_TTL_MS = 30 * 60 * 1000;
 const RELAY_STATE_CACHE_MS = 300;
 const LOCAL_HEALTH_TIMEOUT_MS = 900;
+const RELOCATION_HEALTH_TIMEOUT_MS = 900;
+const RELOCATION_FAST_RETRY_MS = 300;
+const RELOCATION_SLOW_RETRY_MS = 1500;
+const RELOCATION_FAST_WINDOW_MS = 15000;
 const SPEED_SAMPLE_WINDOW_MS = 3500;
 const SPEED_SAMPLE_MIN_INTERVAL_MS = 250;
 const SPEED_DISPLAY_REFRESH_MS = 750;
 const THEME_STORAGE_KEY = 'crosslan:theme';
+const LOCALE_STORAGE_KEY = 'crosslan:locale';
 const SERVICE_HOST_UI_KEY = 'crosslan:service-host-ui';
 const SERVICE_HOST_DEVICE_ID = 'crosslan-service-host';
 const ZIP32_MAX = 0xffffffff;
@@ -155,9 +185,15 @@ const ZIP_CHUNK_SIZE = 4 * 1024 * 1024;
 const textEncoder = new TextEncoder();
 const messages = {
   zh: {
+    toolbar: { tools: '网页设置', status: '连接状态', theme: '外观', language: '界面语言', system: '跟随系统', systemShort: '系统', auto: '自动', light: '浅色', dark: '深色', chinese: '简体中文', english: 'English' },
+    share: { title: '扫码打开网页', address: '访问地址', close: '关闭', copy: '复制地址', copied: '已复制', unavailable: '暂无可分享的局域网地址', loading: '正在生成二维码...', failed: '二维码生成失败', copyFailed: '复制失败' },
+    relocatingService: '服务正在切换网络', relocationWaiting: '正在等待新地址就绪，连接恢复后会自动跳转。', relocationFailed: '暂时无法连接新地址，请确认设备与所选网卡位于同一局域网。', openNewAddress: '打开新地址',
     local: '本机', connecting: '正在连接信令服务', online: '在线', offline: '离线', themeSystem: '系统', themeLight: '亮色', themeDark: '深色', themeTitle: '切换外观', devices: '局域网设备', selectTarget: '选择目标设备', refresh: '刷新', emptyDevices: '在同一局域网的另一台设备打开 CrossLAN，它会出现在这里。', deviceId: '设备 ID', lastSeen: '最后在线', transfers: '传输', noTransfers: '还没有传输任务。', clearTransfers: '清空任务', cancel: '取消', send: '发送', receive: '接收', openDownload: '打开下载', storage: '存储', saveDirectory: '服务主机保存目录', storageHint: '发送到运行 CrossLAN 服务的这台主机的大文件会直接保存到这里。Docker 通常映射到 /data/CrossLAN。', directSaveReceiver: '本机作为服务主机接收', directSaveReceiverHint: '只在运行 CrossLAN 服务的 PC 上开启；开启后其他设备发来的大文件会直存，不再触发浏览器/IDM 下载。', savePath: '保存路径', network: '网络', speedLimit: '速度限制', uploadLimitHint: '限速仅限制本机作为发送方的上传速度；浏览器下载速度由接收端和网络决定。', currentSpeed: '当前', averageSpeed: '平均', peakSpeed: '峰值', elapsed: '用时', unlimited: '不限速', manual: '手动', mbps: 'Mbps', direct: '直存', browserDownload: '浏览器下载', browserDownloadMode: '浏览器接收', p2p: 'P2P', measuring: '测速中', receivePrompt: '接收', receiveLargePrompt: '接收大文件', receiveBatchPrompt: '接收这批文件', receiverRejected: '接收方已拒绝文件。', waitingSender: '已接受，等待发送方...', waitingLink: '已接受，等待下载链接...', receiveComplete: '接收完成', savingDisk: '正在写入服务主机磁盘...', downloadReady: '下载已准备好。如果没有自动打开，请点“打开下载”。', sentDownloadManager: '已交给浏览器下载管理器。', waitConfirm: '等待对方确认...', waitPhoneConfirm: '等待接收端确认...', savedToPc: '已保存到服务主机', preparingPhone: '正在为接收端准备浏览器下载...', linkSentPhone: '下载链接已发送到接收端。', loadStorage: '正在读取保存目录...', loadStorageFailed: '读取保存目录失败。', saveStorageFailed: '保存目录失败。', current: '当前', saved: '已保存', parseFailed: '无法解析服务器响应。', uploadHttpFailed: '上传失败', uploadNetworkFailed: '上传失败：无法连接到 CrossLAN 服务。', cancelled: '传输已取消。', remoteCancelled: '对方已取消传输。', confirmTimeout: '等待对方确认超时。', failed: '传输失败。', duplicateSending: '这个文件正在传输中，已沿用现有任务。', duplicateIncoming: '相同文件已有接收任务，已忽略重复请求。', receivingRelay: '正在通过内存流式中继传输...', packagingBatch: '正在打包批量文件...', batchLabel: '批量文件'
   },
   en: {
+    toolbar: { tools: 'Page settings', status: 'Connection status', theme: 'Appearance', language: 'Interface language', system: 'Follow system', systemShort: 'System', auto: 'Auto', light: 'Light', dark: 'Dark', chinese: '简体中文', english: 'English' },
+    share: { title: 'Open via QR code', address: 'Web address', close: 'Close', copy: 'Copy address', copied: 'Copied', unavailable: 'No LAN address available', loading: 'Generating QR code...', failed: 'Unable to generate QR code', copyFailed: 'Unable to copy address' },
+    relocatingService: 'Switching service network', relocationWaiting: 'Waiting for the new address. This page will redirect automatically when it is ready.', relocationFailed: 'The new address is not reachable yet. Check that this device is on the selected adapter network.', openNewAddress: 'Open new address',
     local: 'Local', connecting: 'Connecting to signaling server', online: 'Online', offline: 'Offline', themeSystem: 'System', themeLight: 'Light', themeDark: 'Dark', themeTitle: 'Switch appearance', devices: 'LAN devices', selectTarget: 'Select target device', refresh: 'Refresh', emptyDevices: 'Open CrossLAN on another device in the same LAN and it will appear here.', deviceId: 'Device ID', lastSeen: 'Last seen', transfers: 'Transfers', noTransfers: 'No transfers yet.', clearTransfers: 'Clear tasks', cancel: 'Cancel', send: 'Send', receive: 'Receive', openDownload: 'Open download', storage: 'Storage', saveDirectory: 'Service host save directory', storageHint: 'Large files sent to the host running CrossLAN are saved directly here. Docker usually maps this to /data/CrossLAN.', directSaveReceiver: 'Receive as service host', directSaveReceiverHint: 'Enable only on the PC running CrossLAN. Incoming large files are saved directly and will not trigger browser/IDM downloads.', savePath: 'Save path', network: 'Network', speedLimit: 'Speed limit', uploadLimitHint: 'The limit only throttles uploads from this browser; browser download speed is controlled by the receiver and network.', currentSpeed: 'Now', averageSpeed: 'Avg', peakSpeed: 'Peak', elapsed: 'Time', unlimited: 'Unlimited', manual: 'Manual', mbps: 'Mbps', direct: 'Direct save', browserDownload: 'Browser download', browserDownloadMode: 'Browser receive', p2p: 'P2P', measuring: 'measuring', receivePrompt: 'Receive', receiveLargePrompt: 'Receive large file', receiveBatchPrompt: 'Receive this batch', receiverRejected: 'Receiver rejected the file.', waitingSender: 'Accepted. Waiting for sender...', waitingLink: 'Accepted. Waiting for download link...', receiveComplete: 'Receive complete', savingDisk: 'Saving to host disk...', downloadReady: 'Download ready. If it did not open, tap Open download.', sentDownloadManager: 'Sent to browser download manager.', waitConfirm: 'Waiting for receiver confirmation...', waitPhoneConfirm: 'Waiting for receiver confirmation...', savedToPc: 'Saved to service host', preparingPhone: 'Preparing browser download for receiver...', linkSentPhone: 'Download link sent to receiver.', loadStorage: 'Loading save directory...', loadStorageFailed: 'Failed to load directory.', saveStorageFailed: 'Failed to save directory.', current: 'Current', saved: 'Saved', parseFailed: 'Failed to parse server response.', uploadHttpFailed: 'Upload failed', uploadNetworkFailed: 'Upload failed: cannot connect to CrossLAN service.', cancelled: 'Transfer cancelled.', remoteCancelled: 'Peer cancelled the transfer.', confirmTimeout: 'Timed out waiting for receiver confirmation.', failed: 'Transfer failed.', duplicateSending: 'This file is already being transferred. Reusing the existing task.', duplicateIncoming: 'The same file already has a receive task. Ignoring the duplicate request.', receivingRelay: 'Streaming through memory relay...', packagingBatch: 'Packaging batch files...', batchLabel: 'Batch files' }
 };
 
@@ -185,14 +221,27 @@ type RelayState = {
   uploadComplete?: boolean;
   downloadComplete?: boolean;
 };
-type HealthResponse = { ok?: boolean; name?: string; deploymentMode?: string; instanceId?: string; serverInstanceId?: string };
-type HostConnectionRole = { directSave: boolean; hostUi: boolean; serverMode?: ServerMode };
+type HealthResponse = { ok?: boolean; name?: string; deploymentMode?: string; desktopManaged?: boolean; instanceId?: string; serverInstanceId?: string };
+type HostConnectionRole = { directSave: boolean; hostUi: boolean; serverMode?: ServerMode; desktopManaged?: boolean };
 type SpeedSamplePoint = { at: number; bytes: number };
 type SpeedSampleState = {
   startedAt: number;
   direction: TransferProgress['direction'];
   mode?: TransferProgress['mode'];
   points: SpeedSamplePoint[];
+};
+
+const messageKeysByText = new Map<string, keyof typeof messages.zh>();
+for (const key of Object.keys(messages.zh) as (keyof typeof messages.zh)[]) {
+  for (const language of ['zh', 'en'] as const) {
+    const value = messages[language][key];
+    if (typeof value === 'string') messageKeysByText.set(value, key);
+  }
+}
+type ServiceRelocationState = {
+  targetUrl: string;
+  redirectUrl: string;
+  failed: boolean;
 };
 
 const identity = new DeviceIdentity();
@@ -202,6 +251,7 @@ const engine = new TransferEngine(signaling, () => identity.getDeviceId());
 const noSleep = new NoSleep();
 
 const connected = ref(false);
+const shareDialogOpen = ref(false);
 const localIdentity = ref<LocalIdentity | null>(null);
 const devices = ref<DeviceRecord[]>([]);
 const discoveredDevices = ref<DeviceRecord[]>([]);
@@ -214,6 +264,7 @@ const pendingRelayAccepts = new Map<string, PendingAccept>();
 const pendingBatchAccepts = new Map<string, PendingBatchAccept>();
 const pendingRelayCompletions = new Map<string, PendingRelayCompletion>();
 const activeUploads = new Map<string, { abort: () => void }>();
+const activeThrottleWaits = new Map<string, () => void>();
 const activePeers = new Map<string, string>();
 const activeSendKeys = new Map<string, string>();
 const incomingPromptKeys = new Map<string, string>();
@@ -225,15 +276,23 @@ const cancelledTransfers = new Set<string>();
 const bandwidthMode = ref<BandwidthMode>('unlimited');
 const manualLimitMbps = ref(100);
 const themePreference = ref<ThemePreference>(loadThemePreference());
+const localePreference = ref<LocalePreference>(loadLocalePreference());
+const browserLanguage = ref(navigator.language);
 const serviceHostUi = ref(loadServiceHostUiPreference());
+const storageManagedByDesktop = ref(false);
+const hostRoleResolved = ref(false);
 const saveDirInput = ref('');
 const storageMessage = ref(messages.zh.loadStorage);
 const storageStatusOk = ref(true);
+const serviceRelocation = ref<ServiceRelocationState | null>(null);
 let speedDisplayTimer: number | null = null;
 let pageHiddenAt: number | null = null;
+let relocationAttempt = 0;
 const progressItems = computed(() => [...progress.value.values()]);
-const isZh = computed(() => navigator.language.toLowerCase().startsWith('zh'));
+const resolvedLocale = computed(() => resolveUiLocale(localePreference.value, browserLanguage.value));
+const isZh = computed(() => resolvedLocale.value === 'zh-CN');
 const t = computed(() => isZh.value ? messages.zh : messages.en);
+const shareAddresses = computed(() => getShareAddressOptions(location.href, localIdentity.value?.serverIps));
 const localStatus = computed(() => {
   const local = localIdentity.value;
   if (!local) return t.value.connecting;
@@ -242,12 +301,6 @@ const localStatus = computed(() => {
   return `${t.value.local} ${ip}`;
 });
 const protocolLabel = computed(() => location.protocol === 'https:' ? 'HTTPS' : 'HTTP LAN');
-const themeButtonLabel = computed(() => {
-  if (themePreference.value === 'light') return t.value.themeLight;
-  if (themePreference.value === 'dark') return t.value.themeDark;
-  return t.value.themeSystem;
-});
-const themeTitle = computed(() => `${t.value.themeTitle}: ${themeButtonLabel.value}`);
 const isServiceHost = computed(() => {
   const host = location.hostname;
   if (isLoopbackHost(host)) return true;
@@ -256,6 +309,7 @@ const isServiceHost = computed(() => {
   if (!local) return false;
   return Boolean(local.canDirectSave || local.serverIps.includes(local.ip));
 });
+const showStorageSettings = computed(() => hostRoleResolved.value && isServiceHost.value && !storageManagedByDesktop.value);
 const serviceHostTarget = computed<DeviceRecord | null>(() => {
   const local = localIdentity.value;
   if (serverMode.value !== 'docker') return null;
@@ -279,6 +333,14 @@ const targetDevices = computed(() => {
   return serviceHost ? [serviceHost, ...devices.value] : devices.value;
 });
 
+watch(showStorageSettings, visible => {
+  if (visible) void loadStorageDir();
+  else {
+    saveDirInput.value = '';
+    storageMessage.value = '';
+  }
+});
+
 onMounted(() => {
   applyThemePreference(themePreference.value);
   addLog('app mounted', { href: location.href, userAgent: navigator.userAgent });
@@ -292,44 +354,83 @@ onMounted(() => {
     await handleAppMessage(message);
   });
 
-  engine.onIncoming(async (meta, from) => {
-    const ok = await confirmIncomingTransfer(from, meta, t.value.receivePrompt);
-    if (ok) enableWakeLock();
-    return ok;
-  });
+  engine.onIncoming(prepareP2PReceive);
 
-  engine.onProgress(item => {
-    logProgress(item);
-    const sampled = withSpeedSample(item);
-    const finalItem = maybeAutoDownload(sampled);
-    progress.value = new Map(progress.value).set(finalItem.id, finalItem);
-    if (finalItem.done) {
-      speedSamples.delete(finalItem.id);
-      disableWakeLock();
-    }
-  });
+  engine.onProgress(handleP2PProgress);
 
   void connectSignaling();
-  void loadStorageDir();
   startSpeedDisplayTimer();
   document.addEventListener('visibilitychange', handleVisibility);
   window.addEventListener('online', handleConnectivityRestore);
+  window.addEventListener('languagechange', handleLanguageChange);
   window.addEventListener('beforeunload', cleanup);
 });
 
 onUnmounted(cleanup);
 
+function handleP2PProgress(item: TransferProgress) {
+  if (cancelledTransfers.has(item.id) && !item.cancelled) return;
+  const current = progress.value.get(item.id);
+  // A channel error may arrive before the peer's cancellation over WebSocket.
+  if (current?.done && !(current.failed && item.cancelled)) return;
+  logProgress(item);
+  const sampled = withSpeedSample(item);
+  const finalItem = maybeAutoDownload(sampled);
+  progress.value = new Map(progress.value).set(finalItem.id, finalItem);
+  if (finalItem.done) {
+    speedSamples.delete(finalItem.id);
+    disableWakeLock();
+  }
+}
+
 watch([bandwidthMode, manualLimitMbps], () => {
+  for (const resume of activeThrottleWaits.values()) resume();
   engine.setBandwidthLimit({
     mode: bandwidthMode.value,
     bytesPerSecond: getManualLimitBytesPerSecond()
   });
-});
+}, { immediate: true });
 
 watch(themePreference, value => {
   applyThemePreference(value);
   saveThemePreference(value);
 });
+
+watch(localePreference, value => {
+  try {
+    localStorage.setItem(LOCALE_STORAGE_KEY, value);
+  } catch {
+    // The selected language still works when browser storage is unavailable.
+  }
+});
+
+watch(resolvedLocale, value => {
+  document.documentElement.lang = value;
+}, { immediate: true });
+
+function loadLocalePreference(): LocalePreference {
+  try {
+    return normalizeLocalePreference(localStorage.getItem(LOCALE_STORAGE_KEY));
+  } catch {
+    return 'system';
+  }
+}
+
+function handleLanguageChange(): void {
+  browserLanguage.value = navigator.language;
+}
+
+function displayStoredMessage(value: string): string {
+  for (const key of ['current', 'saved'] as const) {
+    for (const language of ['zh', 'en'] as const) {
+      const prefix = `${messages[language][key]}: `;
+      if (value.startsWith(prefix)) return `${t.value[key]}: ${value.slice(prefix.length)}`;
+    }
+  }
+  const key = messageKeysByText.get(value);
+  const translated = key ? t.value[key] : value;
+  return typeof translated === 'string' ? translated : value;
+}
 
 function getManualLimitBytesPerSecond() {
   const mbps = Number(manualLimitMbps.value);
@@ -363,12 +464,6 @@ function loadServiceHostUiPreference() {
   return localStorage.getItem(SERVICE_HOST_UI_KEY) === '1';
 }
 
-function cycleTheme() {
-  const order: ThemePreference[] = ['system', 'light', 'dark'];
-  const index = order.indexOf(themePreference.value);
-  themePreference.value = order[(index + 1) % order.length];
-}
-
 function isLoopbackHost(host: string) {
   return host === 'localhost' || host === '127.0.0.1' || host === '::1';
 }
@@ -384,6 +479,8 @@ async function connectSignaling() {
   const role = await detectHostConnectionRole();
   if (role.serverMode) serverMode.value = role.serverMode;
   serviceHostUi.value = role.hostUi;
+  storageManagedByDesktop.value = Boolean(role.desktopManaged);
+  hostRoleResolved.value = true;
   if (!role.hostUi) localStorage.removeItem(SERVICE_HOST_UI_KEY);
   addLog('signaling role resolved', { directSave: role.directSave, hostUi: role.hostUi, serverMode: role.serverMode, host: location.hostname });
   signaling.connect(identity.getClientId(), role.directSave, role.hostUi);
@@ -393,11 +490,11 @@ async function detectHostConnectionRole(): Promise<HostConnectionRole> {
   const remoteHealth = await fetchHealth(new URL('/api/health', location.origin).toString());
   const remoteMode = normalizeServerMode(remoteHealth?.deploymentMode);
   if (remoteMode !== 'docker') {
-    return { directSave: isLoopbackHost(location.hostname), hostUi: false, serverMode: remoteMode };
+    return { directSave: isLoopbackHost(location.hostname), hostUi: false, serverMode: remoteMode, desktopManaged: remoteHealth?.desktopManaged };
   }
 
   if (serviceHostUi.value || isLoopbackHost(location.hostname)) {
-    return { directSave: true, hostUi: true, serverMode: remoteMode };
+    return { directSave: true, hostUi: true, serverMode: remoteMode, desktopManaged: remoteHealth?.desktopManaged };
   }
 
   const localHealth = await fetchHealth(`${location.protocol}//127.0.0.1:${location.port || '6100'}/api/health`, LOCAL_HEALTH_TIMEOUT_MS);
@@ -408,10 +505,10 @@ async function detectHostConnectionRole(): Promise<HostConnectionRole> {
   );
 
   if (sameDockerServer || await probeLocalDockerHostUi(remoteHealth)) {
-    return { directSave: true, hostUi: true, serverMode: remoteMode };
+    return { directSave: true, hostUi: true, serverMode: remoteMode, desktopManaged: remoteHealth?.desktopManaged };
   }
 
-  return { directSave: false, hostUi: false, serverMode: remoteMode };
+  return { directSave: false, hostUi: false, serverMode: remoteMode, desktopManaged: remoteHealth?.desktopManaged };
 }
 
 async function fetchHealth(url: string, timeoutMs = LOCAL_HEALTH_TIMEOUT_MS): Promise<HealthResponse | null> {
@@ -427,6 +524,80 @@ async function fetchHealth(url: string, timeoutMs = LOCAL_HEALTH_TIMEOUT_MS): Pr
   } finally {
     window.clearTimeout(timer);
   }
+}
+
+function beginServiceRelocation(value: string, delayMs: number) {
+  const target = normalizeServiceRelocationUrl(value);
+  if (!target || target.origin === location.origin) return;
+  shareDialogOpen.value = false;
+
+  const attempt = ++relocationAttempt;
+  const redirectTarget = new URL(target);
+  const desktopToken = sessionStorage.getItem('crosslan:desktop-session')?.trim();
+  if (desktopToken) redirectTarget.searchParams.set('crosslanDesktopToken', desktopToken);
+  serviceRelocation.value = {
+    targetUrl: target.toString(),
+    redirectUrl: redirectTarget.toString(),
+    failed: false
+  };
+  connected.value = false;
+  signaling.close();
+  void waitForRelocationTarget(target, redirectTarget, delayMs, attempt);
+}
+
+function normalizeServiceRelocationUrl(value: string) {
+  try {
+    const target = new URL(value);
+    if (target.protocol !== 'http:' && target.protocol !== 'https:') return null;
+    if (!target.hostname || target.username || target.password) return null;
+    target.pathname = '/';
+    target.search = '';
+    target.hash = '';
+    return target;
+  } catch {
+    return null;
+  }
+}
+
+async function waitForRelocationTarget(target: URL, redirectTarget: URL, delayMs: number, attempt: number) {
+  const grace = Number.isFinite(delayMs) ? Math.min(5000, Math.max(0, delayMs)) : 1500;
+  if (grace > 250) await waitForRelocationDelay(grace - 250);
+  const fastDeadline = Date.now() + RELOCATION_FAST_WINDOW_MS;
+
+  while (attempt === relocationAttempt) {
+    if (await probeRelocationTarget(target)) {
+      location.replace(redirectTarget.toString());
+      return;
+    }
+    const failed = Date.now() >= fastDeadline;
+    if (failed && serviceRelocation.value && attempt === relocationAttempt) {
+      serviceRelocation.value = { ...serviceRelocation.value, failed: true };
+    }
+    await waitForRelocationDelay(failed ? RELOCATION_SLOW_RETRY_MS : RELOCATION_FAST_RETRY_MS);
+  }
+}
+
+async function probeRelocationTarget(target: URL) {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), RELOCATION_HEALTH_TIMEOUT_MS);
+  try {
+    const response = await fetch(new URL('/api/health', target).toString(), {
+      cache: 'no-store',
+      mode: 'cors',
+      signal: controller.signal
+    });
+    if (!response.ok) return false;
+    const health = await response.json() as HealthResponse;
+    return health.ok === true && health.name === 'CrossLAN';
+  } catch {
+    return false;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+function waitForRelocationDelay(delayMs: number) {
+  return new Promise<void>(resolve => window.setTimeout(resolve, delayMs));
 }
 
 function getHealthInstanceId(health: HealthResponse | null | undefined) {
@@ -506,9 +677,16 @@ function dedupeDevices(list: DeviceRecord[]) {
 }
 
 async function handleAppMessage(message: SignalingMessage) {
+  if (message.type === 'service-relocating') {
+    beginServiceRelocation(message.targetUrl, message.delayMs);
+    return;
+  }
+
   if (message.type === 'hello') {
     serverMode.value = normalizeServerMode(message.serverMode);
     localIdentity.value = identity.applyServerIdentity(message.device, message.serverIps);
+    signaling.send({ type: 'transfer-state-request', transferIds: getActiveTransferIds() });
+    void reconcileActiveRelayTransfers();
     await store.upsert(localIdentity.value);
     return;
   }
@@ -568,6 +746,7 @@ async function handleAppMessage(message: SignalingMessage) {
     const current = progress.value.get(message.transferId);
     if (current?.done) return;
     if (message.cancelled && current) {
+      rejectPending(pendingDirectAccepts, message.transferId, t.value.remoteCancelled);
       cancelledTransfers.add(message.transferId);
       autoDownloadedTransfers.add(message.transferId);
       activeUploads.get(message.transferId)?.abort();
@@ -588,6 +767,7 @@ async function handleAppMessage(message: SignalingMessage) {
       bytesTransferred: current?.bytesTransferred || 0,
       totalBytes: current?.totalBytes || 0,
       done: true,
+      failed: true,
       mode: 'direct',
       statusText: message.message
     });
@@ -828,10 +1008,30 @@ async function sendSelectedFile(target: DeviceRecord, file: File, batchMeta?: Tr
   }
 }
 
+async function prepareP2PReceive(meta: FileMeta, from: string) {
+  if (cancelledTransfers.has(meta.transferId) || progress.value.get(meta.transferId)?.done) {
+    return { accepted: false as const, reason: t.value.cancelled };
+  }
+  if (meta.size > P2P_MAX_FILE_SIZE) {
+    return { accepted: false as const, reason: 'WebRTC files are limited to 64 MiB. Please resend using Relay or direct save.' };
+  }
+  const accepted = await confirmIncomingTransfer(from, meta, t.value.receivePrompt);
+  if (!accepted || cancelledTransfers.has(meta.transferId)) {
+    return { accepted: false as const, reason: accepted ? t.value.cancelled : t.value.receiverRejected };
+  }
+  enableWakeLock();
+  return {
+    accepted: true as const,
+    sink: new BlobReceiveSink({ size: meta.size, type: meta.type || 'application/octet-stream' })
+  };
+}
+
 async function handleDirectTransferRequest(from: string, meta: FileMeta) {
+  if (cancelledTransfers.has(meta.transferId) || progress.value.get(meta.transferId)?.done) return;
   addLog('direct request received', { from, transferId: meta.transferId, file: meta.name, size: meta.size });
   if (rejectDuplicateIncoming(from, meta, 'direct')) return;
   const ok = await confirmIncomingTransfer(from, meta, t.value.receiveLargePrompt);
+  if (cancelledTransfers.has(meta.transferId)) return;
   if (!ok) {
     signaling.send({ type: 'direct-transfer-reject', to: from, transferId: meta.transferId, reason: t.value.receiverRejected });
     return;
@@ -898,9 +1098,11 @@ async function handleBatchTransferRequest(from: string, message: Extract<Signali
 }
 
 async function handleRelayTransferRequest(from: string, meta: FileMeta) {
+  if (cancelledTransfers.has(meta.transferId) || progress.value.get(meta.transferId)?.done) return;
   addLog('relay request received', { from, transferId: meta.transferId, file: meta.name, size: meta.size });
   if (rejectDuplicateIncoming(from, meta, 'relay')) return;
   const ok = await confirmIncomingTransfer(from, meta, t.value.receiveLargePrompt);
+  if (cancelledTransfers.has(meta.transferId)) return;
   if (!ok) {
     signaling.send({ type: 'relay-transfer-reject', to: from, transferId: meta.transferId, reason: t.value.receiverRejected });
     return;
@@ -1184,13 +1386,14 @@ function handleRelayTransferComplete(transferId: string, fileName: string, bytes
 function handleRelayTransferError(transferId: string, fileName = 'Relay file', message: string, cancelled = false) {
   const current = progress.value.get(transferId);
   if (current?.done) return;
+  rejectPending(pendingRelayAccepts, transferId, message);
   rejectRelayCompletion(transferId, message);
+  activeUploads.get(transferId)?.abort();
+  activeUploads.delete(transferId);
   if (cancelledTransfers.has(transferId)) return;
   if (cancelled) {
     cancelledTransfers.add(transferId);
     autoDownloadedTransfers.add(transferId);
-    activeUploads.get(transferId)?.abort();
-    activeUploads.delete(transferId);
     markCancelled(transferId, t.value.remoteCancelled, current?.peerId);
     disableWakeLock();
     return;
@@ -1208,6 +1411,7 @@ function handleRelayTransferError(transferId: string, fileName = 'Relay file', m
     mode: 'relay',
     cancellable: false,
     cancelled: message === t.value.cancelled || message === t.value.remoteCancelled,
+    failed: message !== t.value.cancelled && message !== t.value.remoteCancelled,
     peerId: current?.peerId,
     statusText: message
   });
@@ -1218,12 +1422,18 @@ function withSpeedSample(item: TransferProgress): TransferProgress {
   const now = performance.now();
   const previousState = speedSamples.get(item.id);
   const current = progress.value.get(item.id);
+  if (current?.done && !(current.failed && item.cancelled)) return current;
   const startedAt = current?.startedAt || item.startedAt || now;
   const safeTotal = Math.max(item.totalBytes || 0, current?.totalBytes || 0);
   const safeBytes = item.done
     ? Math.max(item.bytesTransferred || 0, current?.bytesTransferred || 0)
     : Math.min(safeTotal || item.bytesTransferred || 0, Math.max(item.bytesTransferred || 0, current?.bytesTransferred || 0));
-  const normalized = { ...item, bytesTransferred: safeBytes, totalBytes: safeTotal || item.totalBytes, startedAt, completedAt: item.done ? item.completedAt || now : item.completedAt };
+  const normalized = { ...current, ...item, bytesTransferred: safeBytes, totalBytes: safeTotal || item.totalBytes, startedAt, completedAt: item.done ? item.completedAt || now : item.completedAt };
+  // WebRTC already measures bytes acknowledged by the receiver; do not resample them.
+  if (normalized.mode === 'p2p') {
+    speedSamples.delete(item.id);
+    return normalized;
+  }
   const needsNewSample = !previousState || previousState.direction !== normalized.direction || previousState.mode !== normalized.mode;
   const state = needsNewSample
     ? createSpeedSampleState(normalized, current, startedAt)
@@ -1370,11 +1580,11 @@ function triggerBrowserDownload(url: string, fileName: string) {
 }
 
 function shouldDirectSave(target: DeviceRecord, file: File) {
-  return file.size > DIRECT_SAVE_THRESHOLD && canDirectSaveTo(target);
+  return resolveAutomaticTransferRoute(file.size, canDirectSaveTo(target)) === 'direct';
 }
 
 function shouldRelayToBrowserDownload(target: DeviceRecord, file: File) {
-  return file.size > P2P_MAX_FILE_SIZE && !shouldDirectSave(target, file);
+  return resolveAutomaticTransferRoute(file.size, canDirectSaveTo(target)) === 'relay';
 }
 
 function canDirectSaveTo(target: DeviceRecord) {
@@ -1452,6 +1662,7 @@ async function sendDirectToServer(target: DeviceRecord, file: File, batchMeta?: 
     signaling.send({ type: 'direct-transfer-request', to: target.id, fileMeta });
     addLog('direct request sent', { transferId: id, to: target.id });
     await accepted;
+    if (cancelledTransfers.has(id)) throw new Error(t.value.cancelled);
     addLog('direct request accepted by peer', { transferId: id, target: target.id });
     updateStatus(id, t.value.savingDisk);
     const result = await uploadWithProgress(file, id, uploaded => updateUploaded(id, uploaded));
@@ -1509,6 +1720,7 @@ async function sendRelayToBrowserDownload(target: DeviceRecord, file: File, batc
     signaling.send({ type: 'relay-transfer-request', to: target.id, fileMeta });
     addLog('relay request sent', { transferId: id, to: target.id });
     await accepted;
+    if (cancelledTransfers.has(id)) throw new Error(t.value.cancelled);
     addLog('relay request accepted by peer', { transferId: id });
     updateStatus(id, t.value.preparingPhone);
 
@@ -1574,7 +1786,7 @@ function clearTransfers() {
 
 function handleRemoteCancel(transferId: string, from: string, reason?: string) {
   const current = progress.value.get(transferId);
-  if (current?.done && !current.cancelled) {
+  if (current?.done && !current.cancelled && !current.failed) {
     addLog('remote cancellation ignored after completion', { transferId, from }, 'warn');
     return;
   }
@@ -1604,7 +1816,7 @@ function cleanupServerTransfer(transferId: string, mode?: TransferProgress['mode
 
 function markCancelled(transferId: string, statusText: string, peerId?: string) {
   const current = progress.value.get(transferId);
-  if (current?.done && !current.cancelled) return;
+  if (current?.done && !current.cancelled && !current.failed) return;
   if (!current) {
     progress.value = new Map(progress.value).set(transferId, {
       id: transferId,
@@ -1627,6 +1839,7 @@ function markCancelled(transferId: string, statusText: string, peerId?: string) 
     done: true,
     cancellable: false,
     cancelled: true,
+    failed: false,
     downloadUrl: undefined,
     needsUserSave: false,
     peerId: peerId || current.peerId,
@@ -1648,7 +1861,7 @@ function findActiveSend(targetId: string, file: File, mode: 'direct' | 'relay') 
 function wasLastSendCancelledOrFailed(targetId: string, file: File) {
   const candidates = [...progress.value.values()].filter(item => item.direction === 'send' && item.peerId === targetId && item.fileName === file.name && item.totalBytes === file.size);
   const latest = candidates.at(-1);
-  return Boolean(latest?.done && (latest.cancelled || (latest.bytesTransferred < latest.totalBytes)));
+  return Boolean(latest?.done && (latest.cancelled || latest.failed || (latest.bytesTransferred < latest.totalBytes)));
 }
 
 function createSendPlan(files: File[]) {
@@ -1919,6 +2132,7 @@ function markFailed(id: string, file: File, mode: 'direct' | 'relay', error: unk
     mode,
     cancellable: false,
     cancelled: message === t.value.cancelled || message === t.value.remoteCancelled,
+    failed: message !== t.value.cancelled && message !== t.value.remoteCancelled,
     downloadUrl: undefined,
     needsUserSave: false,
     peerId: current?.peerId,
@@ -2011,11 +2225,18 @@ async function uploadFileChunkedWithThrottle<T extends Record<string, unknown>>(
   let uploaded = 0;
   let finalResponse: T | null = null;
   let throttleStartedAt = performance.now();
+  let throttleStartBytes = 0;
+  let throttleLimit = getManualLimitBytesPerSecond();
   addLog('throttled chunk upload opened', { endpoint, transferId, file: file.name, size: file.size, limitMbps: manualLimitMbps.value });
 
   while (uploaded < file.size) {
+    if (cancelledTransfers.has(transferId)) throw new Error(t.value.cancelled);
     const limit = getManualLimitBytesPerSecond();
-    if (!limit) throttleStartedAt = performance.now();
+    if (limit !== throttleLimit) {
+      throttleLimit = limit;
+      throttleStartedAt = performance.now();
+      throttleStartBytes = uploaded;
+    }
     const chunkSize = getThrottleChunkSize(limit);
     const end = Math.min(uploaded + chunkSize, file.size);
     const chunk = file.slice(uploaded, end);
@@ -2024,8 +2245,8 @@ async function uploadFileChunkedWithThrottle<T extends Record<string, unknown>>(
     uploaded = end;
     onProgress(uploaded);
     if (isFinal) finalResponse = result;
-    if (limit) {
-      const idealElapsedMs = (uploaded / limit) * 1000;
+    if (!isFinal && limit && limit === getManualLimitBytesPerSecond()) {
+      const idealElapsedMs = ((uploaded - throttleStartBytes) / limit) * 1000;
       const waitMs = throttleStartedAt + idealElapsedMs - performance.now();
       if (waitMs > 1) await sleepForThrottle(waitMs, transferId);
     }
@@ -2080,16 +2301,29 @@ function uploadChunk<T extends Record<string, unknown>>(endpoint: string, file: 
 }
 
 function sleepForThrottle(ms: number, transferId: string) {
+  let pending: { abort: () => void };
+  let resume: () => void;
   return new Promise<void>((resolve, reject) => {
+    if (cancelledTransfers.has(transferId)) {
+      reject(new Error(t.value.cancelled));
+      return;
+    }
     const timer = window.setTimeout(resolve, ms);
-    activeUploads.set(transferId, {
+    resume = () => {
+      window.clearTimeout(timer);
+      resolve();
+    };
+    pending = {
       abort: () => {
         window.clearTimeout(timer);
         reject(new Error(t.value.cancelled));
       }
-    });
+    };
+    activeUploads.set(transferId, pending);
+    activeThrottleWaits.set(transferId, resume);
   }).finally(() => {
-    if (activeUploads.get(transferId)) activeUploads.delete(transferId);
+    if (activeUploads.get(transferId) === pending) activeUploads.delete(transferId);
+    if (activeThrottleWaits.get(transferId) === resume) activeThrottleWaits.delete(transferId);
   });
 }
 
@@ -2110,6 +2344,7 @@ async function fetchRelayState(transferId: string, signal: AbortSignal, force = 
 }
 
 async function loadStorageDir() {
+  if (!showStorageSettings.value) return;
   try {
     const response = await fetch('/api/storage');
     const data = await response.json();
@@ -2124,7 +2359,7 @@ async function loadStorageDir() {
 }
 
 async function saveStorageDir() {
-  if (!isServiceHost.value) {
+  if (!showStorageSettings.value) {
     storageMessage.value = t.value.saveStorageFailed;
     storageStatusOk.value = false;
     return;
@@ -2227,6 +2462,10 @@ async function reconcileActiveRelayTransfers() {
     try {
       relayStateCache.delete(item.id);
       const state = await fetchRelayState(item.id, controller.signal, true);
+      if (state.failed) {
+        handleRelayTransferError(item.id, item.fileName, state.message || t.value.failed, state.cancelled);
+        return;
+      }
       const downloaded = state.bytesDownloaded;
       if (typeof downloaded !== 'number' || !Number.isFinite(downloaded)) return;
       const totalBytes = Math.max(item.totalBytes, state.expectedSize || 0);
@@ -2249,6 +2488,8 @@ async function reconcileActiveRelayTransfers() {
       });
     } catch (error) {
       if (error instanceof Error && error.name === 'RelayCancelledError') {
+        rejectPending(pendingRelayAccepts, item.id, t.value.remoteCancelled);
+        rejectRelayCompletion(item.id, t.value.remoteCancelled);
         cancelledTransfers.add(item.id);
         autoDownloadedTransfers.add(item.id);
         activeUploads.get(item.id)?.abort();
@@ -2267,8 +2508,10 @@ async function reconcileActiveRelayTransfers() {
 }
 
 function cleanup() {
+  relocationAttempt += 1;
   document.removeEventListener('visibilitychange', handleVisibility);
   window.removeEventListener('online', handleConnectivityRestore);
+  window.removeEventListener('languagechange', handleLanguageChange);
   window.removeEventListener('beforeunload', cleanup);
   stopSpeedDisplayTimer();
   for (const pending of pendingDirectAccepts.values()) window.clearTimeout(pending.timer);
@@ -2290,6 +2533,7 @@ function cleanup() {
   activeTransferKeys.clear();
   relayStateCache.clear();
   disableWakeLock();
+  engine.close();
   signaling.close();
 }
 
@@ -2336,7 +2580,7 @@ function formatElapsed(item: TransferProgress) {
 }
 
 function formatTime(ts: number) {
-  return new Date(ts).toLocaleTimeString();
+  return new Date(ts).toLocaleTimeString(resolvedLocale.value);
 }
 
 function createTransferId() {
@@ -2344,6 +2588,3 @@ function createTransferId() {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 </script>
-
-
-
