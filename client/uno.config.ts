@@ -3,6 +3,7 @@ import { defineConfig, presetUno } from 'unocss';
 export default defineConfig({
   presets: [presetUno()],
   theme: {
+    borderRadius: { md: 'var(--control-radius, 10px)', lg: 'var(--control-radius, 10px)' },
     colors: {
       ink: 'rgb(var(--color-ink) / <alpha-value>)',
       mist: 'rgb(var(--color-mist) / <alpha-value>)',

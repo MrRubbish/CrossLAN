@@ -48,6 +48,21 @@ body {
   background: rgb(var(--color-mist));
 }
 
+button.tap,
+a.tap {
+  border-radius: var(--control-radius, 10px);
+  justify-content: center;
+  text-align: center;
+}
+
+.site-header > .mobile-share-button { display: none; width: 40px; padding: 0; }
+
+@media (max-width: 640px) {
+  .site-header { display: grid; grid-template-columns: minmax(0, 1fr) 40px; gap: 18px 12px; }
+  .site-header > .page-toolbar { grid-column: 1 / -1; grid-row: 2; }
+  .site-header > .mobile-share-button { display: inline-flex; grid-column: 2; grid-row: 1; justify-self: end; align-self: center; }
+}
+
 input,
 button,
 a {

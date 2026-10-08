@@ -13,6 +13,6 @@ services:
       CROSSLAN_CONFIG: /config/crosslan.json
       CROSSLAN_RELAY_BUFFER_MB: ${CROSSLAN_RELAY_BUFFER_MB:-256}
     volumes:
-      - ${USERPROFILE}/Downloads/CrossLAN:/data/CrossLAN
+      - "${CROSSLAN_HOST_SAVE_DIR:-./docker-data}:/data/CrossLAN"
       - ./docker-config:/config
     restart: unless-stopped

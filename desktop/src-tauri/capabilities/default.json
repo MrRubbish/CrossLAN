@@ -4,6 +4,8 @@
   "description": "CrossLAN desktop launcher permissions",
   "windows": ["main"],
   "permissions": [
-    "core:default"
+    "core:default",
+    "core:window:allow-set-theme",
+    "dialog:allow-open"
   ]
 }

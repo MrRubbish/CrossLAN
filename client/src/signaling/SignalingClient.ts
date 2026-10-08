@@ -1,6 +1,6 @@
 import type { SignalingMessage } from '../types';
 
-type Handler = (message: SignalingMessage) => void | Promise<void>;
+type Handler = (message: SignalingMessage) => void;
 type DebugLevel = 'info' | 'warn' | 'error';
 type DebugHandler = (message: string, details?: unknown, level?: DebugLevel) => void;
 
@@ -10,7 +10,6 @@ export class SignalingClient {
   private debugHandlers = new Set<DebugHandler>();
   private reconnectTimer: number | null = null;
   private outboundQueue: Record<string, unknown>[] = [];
-  private inboundQueues = new Map<string, Promise<void>>();
   private socketDeviceId = '';
   private socketDirectSave = false;
   private socketHostUi = false;
@@ -41,7 +40,7 @@ export class SignalingClient {
       try {
         const message = JSON.parse(event.data) as SignalingMessage;
         this.emitDebug(`ws message: ${message.type}`, summarizeMessage(message));
-        this.enqueueMessage(message);
+        for (const handler of this.handlers) handler(message);
       } catch (error) {
         this.emitDebug('ws message parse failed', { data: String(event.data).slice(0, 500), error: errorMessage(error) }, 'error');
       }
@@ -115,55 +114,11 @@ export class SignalingClient {
     for (const message of messages) this.send(message);
   }
 
-  private enqueueMessage(message: SignalingMessage) {
-    const key = messageQueueKey(message);
-    const previous = this.inboundQueues.get(key) || Promise.resolve();
-    const current = previous
-      .catch(() => undefined)
-      .then(() => this.dispatchMessage(message));
-    const tail = current.then(() => undefined, () => undefined);
-    this.inboundQueues.set(key, tail);
-    void tail.finally(() => {
-      if (this.inboundQueues.get(key) === tail) this.inboundQueues.delete(key);
-    });
-  }
-
-  private async dispatchMessage(message: SignalingMessage) {
-    const handlers = [...this.handlers];
-    const results = await Promise.allSettled(
-      handlers.map(handler => Promise.resolve().then(() => handler(message)))
-    );
-    for (const result of results) {
-      if (result.status === 'rejected') {
-        this.emitDebug('message handler failed', {
-          type: message.type,
-          transferId: messageTransferId(message),
-          error: errorMessage(result.reason)
-        }, 'error');
-      }
-    }
-  }
-
   private emitDebug(message: string, details?: unknown, level: DebugLevel = 'info') {
     for (const handler of this.debugHandlers) handler(message, details, level);
     const method = level === 'error' ? console.error : level === 'warn' ? console.warn : console.info;
     method('[CrossLAN:signal]', message, details ?? '');
   }
-}
-
-function messageQueueKey(message: SignalingMessage) {
-  const transferId = messageTransferId(message);
-  if (transferId) return `transfer:${transferId}`;
-  if (message.type === 'batch-transfer-request' || message.type === 'batch-transfer-accept' || message.type === 'batch-transfer-reject') {
-    return `batch:${message.batchId}`;
-  }
-  return 'global';
-}
-
-function messageTransferId(message: SignalingMessage) {
-  if ('transferId' in message && message.transferId) return message.transferId;
-  if ('fileMeta' in message && message.fileMeta?.transferId) return message.fileMeta.transferId;
-  return undefined;
 }
 
 function summarizeMessage(message: Record<string, unknown>) {

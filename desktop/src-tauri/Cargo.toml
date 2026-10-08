@@ -1,6 +1,6 @@
 [package]
 name = "crosslan-desktop"
-version = "1.0.5"
+version = "1.0.14"
 description = "CrossLAN desktop launcher"
 authors = ["MrRubbish"]
 edition = "2021"
@@ -15,7 +15,9 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+network-interface = "2.0.5"
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-autostart = "2"
+tauri-plugin-dialog = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-single-instance = "2"

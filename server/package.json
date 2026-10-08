@@ -1,6 +1,6 @@
 {
   "name": "@crosslan/server",
-  "version": "1.0.5",
+  "version": "1.0.14",
   "private": true,
   "type": "module",
   "main": "src/index.js",
@@ -11,6 +11,8 @@
     "check": "node --check src/index.js && node --check src/Logger.js && node --check src/relay/RelayBufferPool.js && node --check src/signaling/SignalingHub.js && node --check src/discovery/MdnsDiscovery.js && node --check src/network/NetworkProber.js && node --test test/RelayBufferPool.test.js test/SignalingHub.test.js",
     "test:relay": "node --test test/RelayBufferPool.test.js",
     "test:relay-http": "node test/RelayHttpSmoke.js",
+    "test:relay-handoff": "node --test test/RelayDownloadHttp.test.js",
+    "test:transfer-http": "node --test test/TransferHttp.test.js",
     "test:signaling": "node --test test/SignalingHub.test.js"
   },
   "dependencies": {

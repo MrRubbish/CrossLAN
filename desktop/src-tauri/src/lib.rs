@@ -1,3 +1,4 @@
+use network_interface::{Addr, NetworkInterface, NetworkInterfaceConfig};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -23,14 +24,18 @@ use tauri_plugin_autostart::ManagerExt as AutostartManagerExt;
 
 const DEFAULT_PORT: u16 = 6100;
 const READY_MARKER: &str = "CrossLAN listening on";
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(12);
+const SERVICE_RELOCATION_GRACE: Duration = Duration::from_millis(1500);
 const TRAY_ID: &str = "main";
 const TRAY_OPEN_FRONTEND: &str = "open-frontend";
 const TRAY_CONFIG: &str = "config";
+const TRAY_OPEN_LOGS: &str = "open-logs";
 const TRAY_TOGGLE_SERVICE: &str = "toggle-service";
 const TRAY_AUTOSTART: &str = "autostart";
 const TRAY_QUIT: &str = "quit";
 const DESKTOP_SESSION_CLOSED_MARKER: &str = "CrossLAN desktop session closed";
 const DESKTOP_PAGE_CLOSED_MARKER: &str = "CrossLAN desktop page closed";
+const DESKTOP_PAGE_CLAIMED_MARKER: &str = "CrossLAN desktop page claimed";
 const DESKTOP_CONFIG_FILE: &str = "desktop.json";
 
 #[derive(Clone, Copy)]
@@ -44,8 +49,20 @@ enum UiLocale {
 struct DesktopConfig {
     port: u16,
     save_dir: String,
+    #[serde(default = "default_network_adapter")]
+    network_adapter: String,
     #[serde(default = "default_locale_preference")]
     locale: String,
+    #[serde(default = "default_theme_preference")]
+    theme: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NetworkAdapter {
+    id: String,
+    name: String,
+    ip: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -121,6 +138,11 @@ fn get_desktop_config(state: State<'_, AppState>) -> Result<DesktopConfig, Strin
 }
 
 #[tauri::command]
+fn list_network_adapters() -> Result<Vec<NetworkAdapter>, String> {
+    available_network_adapters()
+}
+
+#[tauri::command]
 fn save_desktop_config(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -132,16 +154,46 @@ fn save_desktop_config(
         .lock()
         .map_err(|_| "CrossLAN configuration is unavailable.".to_string())?
         .clone();
-    let service_config_changed =
-        previous.port != config.port || previous.save_dir != config.save_dir;
+    if config.network_adapter != "auto" {
+        selected_network_adapter_ip(
+            &config.network_adapter,
+            locale_from_preference(&config.locale),
+        )?;
+    }
+    let next_service_host = configured_service_host(&config)?;
+    let configured_service_changed = previous.port != config.port
+        || previous.save_dir != config.save_dir
+        || previous.network_adapter != config.network_adapter;
     persist_desktop_config(&app, &config)?;
 
-    let was_running = state
+    let (was_running, browser_was_open, current_service_host, session_token) = state
         .runtime
         .lock()
-        .map_err(|_| "CrossLAN service state is unavailable.".to_string())?
-        .child
-        .is_some();
+        .map_err(|_| "CrossLAN service state is unavailable.".to_string())
+        .map(|runtime| {
+            (
+                runtime.child.is_some(),
+                runtime.browser_opened,
+                runtime.service_host.clone(),
+                runtime.desktop_session_token.clone(),
+            )
+        })?;
+    let endpoint_changed = previous.port != config.port
+        || current_service_host != next_service_host;
+    let service_config_changed = configured_service_changed || endpoint_changed;
+    let relocation_notified = was_running
+        && endpoint_changed
+        && !session_token.is_empty()
+        && notify_service_relocation(
+            &current_service_host,
+            previous.port,
+            &session_token,
+            &format_frontend_url(&next_service_host, config.port, ""),
+            SERVICE_RELOCATION_GRACE,
+        );
+    if relocation_notified {
+        std::thread::sleep(SERVICE_RELOCATION_GRACE);
+    }
     if was_running && service_config_changed {
         stop_service(state.inner())?;
     }
@@ -153,8 +205,18 @@ fn save_desktop_config(
         *current = config;
     }
 
-    if was_running && service_config_changed {
-        start_service(&app, state.inner(), true)?;
+    if was_running {
+        if service_config_changed {
+            start_service(
+                &app,
+                state.inner(),
+                !(relocation_notified && browser_was_open),
+            )?;
+        } else {
+            open_frontend(&app)?;
+        }
+    } else {
+        hide_main_window(&app);
     }
     emit_launch_state(&app, state.inner());
     launch_state(state.inner())
@@ -198,6 +260,14 @@ fn emit_launch_state(app: &AppHandle, state: &AppState) {
 
 fn default_locale_preference() -> String {
     "system".to_string()
+}
+
+fn default_theme_preference() -> String {
+    "system".to_string()
+}
+
+fn default_network_adapter() -> String {
+    "auto".to_string()
 }
 
 fn current_ui_locale(app: &AppHandle) -> UiLocale {
@@ -267,6 +337,8 @@ fn tr(locale: UiLocale, key: &str) -> &'static str {
         (UiLocale::EnUs, "open_frontend") => "Open Web UI",
         (UiLocale::ZhCn, "settings") => "修改配置",
         (UiLocale::EnUs, "settings") => "Settings",
+        (UiLocale::ZhCn, "open_logs") => "打开日志文件夹",
+        (UiLocale::EnUs, "open_logs") => "Open Log Folder",
         (UiLocale::ZhCn, "start_service") => "启动服务",
         (UiLocale::EnUs, "start_service") => "Start service",
         (UiLocale::ZhCn, "stop_service") => "停止服务",
@@ -285,11 +357,20 @@ fn tr(locale: UiLocale, key: &str) -> &'static str {
         }
         (UiLocale::ZhCn, "save_dir_empty") => "默认保存目录不能为空。",
         (UiLocale::EnUs, "save_dir_empty") => "The default save directory cannot be empty.",
+        (UiLocale::ZhCn, "adapter_unavailable") => "所选网卡当前不可用",
+        (UiLocale::EnUs, "adapter_unavailable") => {
+            "The selected network adapter is unavailable"
+        }
+        (UiLocale::ZhCn, "startup_timeout") => "CrossLAN 服务启动超时，请重试或查看错误日志。",
+        (UiLocale::EnUs, "startup_timeout") => {
+            "CrossLAN service startup timed out. Retry or check the error log."
+        }
         _ => "",
     }
 }
 
 fn set_launch_error(app: &AppHandle, state: &AppState, message: String) {
+    append_desktop_error(app, &message);
     if let Ok(mut runtime) = state.runtime.lock() {
         runtime.ready = false;
         runtime.last_error = Some(message);
@@ -298,6 +379,7 @@ fn set_launch_error(app: &AppHandle, state: &AppState, message: String) {
 }
 
 fn set_runtime_error(app: &AppHandle, state: &AppState, message: String) {
+    append_desktop_error(app, &message);
     if let Ok(mut runtime) = state.runtime.lock() {
         runtime.last_error = Some(message);
     }
@@ -315,10 +397,16 @@ fn start_service(
         .map_err(|_| "CrossLAN configuration is unavailable.".to_string())?
         .clone();
     let port = config.port;
-    let advertised_ip = std::env::var("CROSSLAN_ADVERTISED_IP")
+    let advertised_ip = match std::env::var("CROSSLAN_ADVERTISED_IP")
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .or_else(detect_lan_ip);
+    {
+        Some(ip) => Some(ip),
+        None => selected_network_adapter_ip(
+            &config.network_adapter,
+            locale_from_preference(&config.locale),
+        )?,
+    };
     let service_host = advertised_ip
         .clone()
         .unwrap_or_else(|| "127.0.0.1".to_string());
@@ -336,9 +424,11 @@ fn start_service(
         runtime.stdout_buffer.clear();
         runtime.browser_opened = false;
         runtime.open_browser_on_ready = open_browser_on_ready;
-        runtime.desktop_session_token = create_session_token(runtime.generation);
+        if runtime.desktop_session_token.is_empty() {
+            runtime.desktop_session_token = create_session_token(runtime.generation);
+        }
         runtime.desktop_session_closed = false;
-        runtime.service_host = service_host;
+        runtime.service_host = service_host.clone();
         runtime.generation
     };
 
@@ -360,6 +450,7 @@ fn start_service(
         .map_err(error_message)?
         .env("PORT", port.to_string())
         .env("CROSSLAN_DEPLOYMENT", "node")
+        .env("CROSSLAN_DESKTOP_MANAGED", "1")
         .env("CROSSLAN_SAVE_DIR", save_dir)
         .env("CROSSLAN_CONFIG", config_dir.join("server-settings.json"))
         .env("CROSSLAN_CLIENT_DIST", client_dist)
@@ -373,7 +464,9 @@ fn start_service(
         .env("CROSSLAN_LOG_FILE", log_dir.join("crosslan-server.log"))
         .env("MDNS_SERVICE_NAME", "CrossLAN");
     let sidecar = match advertised_ip {
-        Some(ip) => sidecar.env("CROSSLAN_ADVERTISED_IP", ip),
+        Some(ip) => sidecar
+            .env("CROSSLAN_ADVERTISED_IP", ip.clone())
+            .env("CROSSLAN_BIND_HOST", ip),
         None => sidecar,
     };
 
@@ -414,7 +507,60 @@ fn start_service(
         }
     });
 
+    let watchdog_app = app.clone();
+    let watchdog_host = service_host;
+    std::thread::spawn(move || {
+        monitor_service_startup(watchdog_app, generation, watchdog_host, port)
+    });
+
     Ok(())
+}
+
+fn monitor_service_startup(app: AppHandle, generation: u64, host: String, port: u16) {
+    let deadline = std::time::Instant::now() + STARTUP_TIMEOUT;
+    while std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(150));
+        let state = app.state::<AppState>();
+        let pending = state
+            .runtime
+            .lock()
+            .map(|runtime| {
+                runtime.generation == generation && runtime.child.is_some() && !runtime.ready
+            })
+            .unwrap_or(false);
+        if !pending {
+            return;
+        }
+        if probe_crosslan_health(&host, port) {
+            handle_stdout(&app, generation, READY_MARKER.as_bytes());
+            return;
+        }
+    }
+
+    let state = app.state::<AppState>();
+    let (should_timeout, child) = state
+        .runtime
+        .lock()
+        .map(|mut runtime| {
+            if runtime.generation != generation || runtime.ready || runtime.child.is_none() {
+                return (false, None);
+            }
+            (true, runtime.child.take())
+        })
+        .unwrap_or((false, None));
+    if !should_timeout {
+        return;
+    }
+    if let Some(child) = child {
+        let _ = child.kill();
+    }
+    let locale = current_ui_locale(&app);
+    set_launch_error(
+        &app,
+        state.inner(),
+        tr(locale, "startup_timeout").to_string(),
+    );
+    show_main_window(&app);
 }
 
 fn handle_stdout(app: &AppHandle, generation: u64, bytes: &[u8]) {
@@ -444,6 +590,9 @@ fn handle_stdout(app: &AppHandle, generation: u64, bytes: &[u8]) {
         if text.contains(DESKTOP_PAGE_CLOSED_MARKER) {
             runtime.browser_opened = false;
         }
+        if text.contains(DESKTOP_PAGE_CLAIMED_MARKER) {
+            runtime.browser_opened = true;
+        }
     }
 
     if became_ready {
@@ -470,8 +619,11 @@ fn handle_stdout(app: &AppHandle, generation: u64, bytes: &[u8]) {
                     runtime.open_browser_on_ready = false;
                 }
             }
-            hide_main_window(app);
         }
+        // A settings-triggered restart reuses and redirects the existing browser
+        // page, so it deliberately does not open another tab. The launcher must
+        // still close once the replacement service is healthy.
+        hide_main_window(app);
     }
 }
 
@@ -492,6 +644,7 @@ fn handle_termination(app: &AppHandle, generation: u64, exit_code: Option<i32>) 
     let state = app.state::<AppState>();
     let mut should_emit = false;
     let mut desktop_session_closed = false;
+    let mut error_to_log = None;
 
     if let Ok(mut runtime) = state.runtime.lock() {
         if runtime.generation != generation {
@@ -504,10 +657,12 @@ fn handle_termination(app: &AppHandle, generation: u64, exit_code: Option<i32>) 
         runtime.desktop_session_closed = false;
         if !state.exiting.load(Ordering::SeqCst) {
             if runtime.last_error.is_none() {
-                runtime.last_error = Some(match exit_code {
+                let message = match exit_code {
                     Some(code) => format!("CrossLAN service exited with code {code}."),
                     None => "CrossLAN service stopped unexpectedly.".to_string(),
-                });
+                };
+                runtime.last_error = Some(message.clone());
+                error_to_log = Some(message);
             }
             should_emit = true;
         }
@@ -522,6 +677,9 @@ fn handle_termination(app: &AppHandle, generation: u64, exit_code: Option<i32>) 
         return;
     }
     if should_emit {
+        if let Some(error) = error_to_log {
+            append_desktop_error(app, &error);
+        }
         emit_launch_state(app, state.inner());
     }
 }
@@ -532,7 +690,7 @@ fn stop_service(state: &AppState) -> Result<(), String> {
         .lock()
         .map_err(|_| "CrossLAN configuration is unavailable.".to_string())?
         .port;
-    let (child, token) = {
+    let (child, token, service_host) = {
         let mut runtime = state
             .runtime
             .lock()
@@ -544,14 +702,19 @@ fn stop_service(state: &AppState) -> Result<(), String> {
         runtime.browser_opened = false;
         runtime.open_browser_on_ready = false;
         runtime.desktop_session_closed = false;
-        (runtime.child.take(), runtime.desktop_session_token.clone())
+        (
+            runtime.child.take(),
+            runtime.desktop_session_token.clone(),
+            runtime.service_host.clone(),
+        )
     };
 
     if child.is_some() && !token.is_empty() {
-        notify_desktop_session_termination(port, &token);
+        notify_desktop_session_termination(&service_host, port, &token);
     }
     if let Some(child) = child {
         child.kill().map_err(error_message)?;
+        wait_for_port_release(&service_host, port, Duration::from_secs(2));
     }
     Ok(())
 }
@@ -560,6 +723,40 @@ fn open_browser(app: &AppHandle, url: &str) -> Result<(), String> {
     app.shell()
         .open(url.to_string(), None)
         .map_err(error_message)
+}
+
+fn open_log_folder(app: &AppHandle) -> Result<(), String> {
+    let log_dir = app
+        .path()
+        .app_config_dir()
+        .map_err(error_message)?
+        .join("logs");
+    fs::create_dir_all(&log_dir).map_err(error_message)?;
+    app.shell()
+        .open(log_dir.to_string_lossy().into_owned(), None)
+        .map_err(error_message)
+}
+
+fn append_desktop_error(app: &AppHandle, message: &str) {
+    let Ok(config_dir) = app.path().app_config_dir() else {
+        return;
+    };
+    let log_dir = config_dir.join("logs");
+    if fs::create_dir_all(&log_dir).is_err() {
+        return;
+    }
+    let Ok(mut file) = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_dir.join("crosslan-server.log"))
+    else {
+        return;
+    };
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    let _ = writeln!(file, "[{timestamp}] [ERROR] {message}");
 }
 
 fn create_tray_menu(app: &AppHandle) -> Result<Menu<tauri::Wry>, String> {
@@ -621,6 +818,14 @@ fn create_tray_menu(app: &AppHandle) -> Result<Menu<tauri::Wry>, String> {
         None::<&str>,
     )
     .map_err(error_message)?;
+    let logs_item = MenuItem::with_id(
+        app,
+        TRAY_OPEN_LOGS,
+        tr(locale, "open_logs"),
+        true,
+        None::<&str>,
+    )
+    .map_err(error_message)?;
     let service_item =
         MenuItem::with_id(app, TRAY_TOGGLE_SERVICE, service_action, true, None::<&str>)
             .map_err(error_message)?;
@@ -644,6 +849,7 @@ fn create_tray_menu(app: &AppHandle) -> Result<Menu<tauri::Wry>, String> {
             &status_item,
             &open_item,
             &config_item,
+            &logs_item,
             &service_item,
             &autostart_item,
             &separator,
@@ -711,6 +917,16 @@ fn handle_tray_menu(app: &AppHandle, event: MenuEvent) {
     if id == TRAY_CONFIG {
         let _ = app.emit("crosslan://open-config", ());
         show_main_window(app);
+        return;
+    }
+
+
+    if id == TRAY_OPEN_LOGS {
+        if let Err(error) = open_log_folder(app) {
+            let state = app.state::<AppState>();
+            set_runtime_error(app, state.inner(), error);
+            show_main_window(app);
+        }
         return;
     }
 
@@ -845,6 +1061,66 @@ fn detect_lan_ip() -> Option<String> {
     }
 }
 
+
+fn available_network_adapters() -> Result<Vec<NetworkAdapter>, String> {
+    let interfaces = NetworkInterface::show().map_err(error_message)?;
+    let mut adapters = Vec::new();
+    for interface in interfaces {
+        let Some(ip) = interface.addr.iter().find_map(|address| match address {
+            Addr::V4(value) if is_usable_lan_ipv4(value.ip) => Some(value.ip),
+            _ => None,
+        }) else {
+            continue;
+        };
+        let id = interface
+            .mac_addr
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .unwrap_or(&interface.name)
+            .to_string();
+        adapters.push(NetworkAdapter {
+            id,
+            name: interface.name,
+            ip: ip.to_string(),
+        });
+    }
+    adapters.sort_by(|left, right| left.name.cmp(&right.name).then(left.ip.cmp(&right.ip)));
+    adapters.dedup_by(|left, right| left.id == right.id);
+    Ok(adapters)
+}
+
+fn selected_network_adapter_ip(
+    selection: &str,
+    locale: UiLocale,
+) -> Result<Option<String>, String> {
+    if selection == "auto" || selection.is_empty() {
+        return Ok(detect_lan_ip());
+    }
+    available_network_adapters()?
+        .into_iter()
+        .find(|adapter| adapter.id == selection)
+        .map(|adapter| Some(adapter.ip))
+        .ok_or_else(|| format!("{}: {selection}", tr(locale, "adapter_unavailable")))
+}
+
+fn configured_service_host(config: &DesktopConfig) -> Result<String, String> {
+    if let Some(ip) = std::env::var("CROSSLAN_ADVERTISED_IP")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    {
+        return Ok(ip);
+    }
+    Ok(selected_network_adapter_ip(
+        &config.network_adapter,
+        locale_from_preference(&config.locale),
+    )?
+    .unwrap_or_else(|| "127.0.0.1".to_string()))
+}
+
+fn is_usable_lan_ipv4(ip: std::net::Ipv4Addr) -> bool {
+    !ip.is_loopback() && !ip.is_unspecified() && !ip.is_link_local() && !ip.is_multicast()
+}
+
 fn hide_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.hide();
@@ -872,7 +1148,9 @@ fn default_desktop_config(app: &AppHandle) -> DesktopConfig {
     DesktopConfig {
         port: DEFAULT_PORT,
         save_dir: save_dir.to_string_lossy().into_owned(),
+        network_adapter: default_network_adapter(),
         locale: default_locale_preference(),
+        theme: default_theme_preference(),
     }
 }
 
@@ -899,6 +1177,14 @@ fn persist_desktop_config(app: &AppHandle, config: &DesktopConfig) -> Result<(),
 
 fn validate_config(mut config: DesktopConfig) -> Result<DesktopConfig, String> {
     config.locale = normalize_locale_preference(config.locale);
+    config.theme = match config.theme.as_str() {
+        "system" | "light" | "dark" => config.theme,
+        _ => default_theme_preference(),
+    };
+    config.network_adapter = config.network_adapter.trim().to_string();
+    if config.network_adapter.is_empty() {
+        config.network_adapter = default_network_adapter();
+    }
     let locale = locale_from_preference(&config.locale);
     if config.port < 1024 {
         return Err(tr(locale, "port_invalid").to_string());
@@ -913,14 +1199,16 @@ fn validate_config(mut config: DesktopConfig) -> Result<DesktopConfig, String> {
     Ok(config)
 }
 
-fn notify_desktop_session_termination(port: u16, token: &str) {
-    let address = SocketAddr::from(([127, 0, 0, 1], port));
+fn notify_desktop_session_termination(host: &str, port: u16, token: &str) {
+    let Some(address) = socket_address(host, port) else {
+        return;
+    };
     let Ok(mut stream) = TcpStream::connect_timeout(&address, Duration::from_millis(500)) else {
         return;
     };
     let body = format!(r#"{{"token":"{token}"}}"#);
     let request = format!(
-        "POST /api/desktop/session/terminate HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "POST /api/desktop/session/terminate HTTP/1.1\r\nHost: {host}:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
     let _ = stream.set_read_timeout(Some(Duration::from_millis(700)));
@@ -932,6 +1220,120 @@ fn notify_desktop_session_termination(port: u16, token: &str) {
     let _ = stream.read(&mut response);
 }
 
+fn notify_service_relocation(
+    host: &str,
+    port: u16,
+    token: &str,
+    target_url: &str,
+    grace: Duration,
+) -> bool {
+    let Some(address) = socket_address(host, port) else {
+        return false;
+    };
+    let Ok(mut stream) = TcpStream::connect_timeout(&address, Duration::from_millis(500)) else {
+        return false;
+    };
+    let body = serde_json::json!({
+        "token": token,
+        "targetUrl": target_url,
+        "delayMs": grace.as_millis() as u64
+    })
+    .to_string();
+    let request = format!(
+        "POST /api/desktop/service/relocate HTTP/1.1\r\nHost: {host}:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(900)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(700)));
+    if stream.write_all(request.as_bytes()).is_err() {
+        return false;
+    }
+    let mut response = [0_u8; 512];
+    let Ok(bytes_read) = stream.read(&mut response) else {
+        return false;
+    };
+    String::from_utf8_lossy(&response[..bytes_read]).starts_with("HTTP/1.1 200")
+}
+
+fn probe_crosslan_health(host: &str, port: u16) -> bool {
+    let Some(address) = socket_address(host, port) else {
+        return false;
+    };
+    let Ok(mut stream) = TcpStream::connect_timeout(&address, Duration::from_millis(120)) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(250)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(120)));
+    let request = format!(
+        "GET /api/health HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n"
+    );
+    if stream.write_all(request.as_bytes()).is_err() {
+        return false;
+    }
+    let mut response = [0_u8; 1024];
+    let Ok(bytes_read) = stream.read(&mut response) else {
+        return false;
+    };
+    let response = String::from_utf8_lossy(&response[..bytes_read]);
+    response.starts_with("HTTP/1.1 200") && response.contains("\"name\":\"CrossLAN\"")
+}
+
+fn wait_for_port_release(host: &str, port: u16, timeout: Duration) {
+    let Some(address) = socket_address(host, port) else {
+        return;
+    };
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        if TcpStream::connect_timeout(&address, Duration::from_millis(50)).is_err() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(40));
+    }
+}
+
+fn socket_address(host: &str, port: u16) -> Option<SocketAddr> {
+    host.parse::<IpAddr>()
+        .ok()
+        .map(|ip| SocketAddr::new(ip, port))
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::{validate_config, DesktopConfig};
+
+    fn legacy_config() -> DesktopConfig {
+        serde_json::from_str(
+            r#"{"port":6100,"saveDir":"Downloads/CrossLAN","networkAdapter":"auto","locale":"system"}"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn missing_theme_defaults_to_system() {
+        assert_eq!(legacy_config().theme, "system");
+    }
+
+    #[test]
+    fn theme_preferences_survive_config_roundtrip() {
+        for theme in ["system", "light", "dark"] {
+            let mut config = legacy_config();
+            config.theme = theme.to_string();
+            let config = validate_config(config).unwrap();
+            let saved = serde_json::to_string(&config).unwrap();
+            let loaded: DesktopConfig = serde_json::from_str(&saved).unwrap();
+            assert_eq!(loaded.theme, theme);
+        }
+    }
+
+    #[test]
+    fn unknown_theme_falls_back_to_system() {
+        let mut config = legacy_config();
+        config.theme = "invalid".to_string();
+        assert_eq!(validate_config(config).unwrap().theme, "system");
+    }
+
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
@@ -940,6 +1342,7 @@ pub fn run() {
                 .args(["--autostart"])
                 .build(),
         )
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             if open_frontend(app).is_err() {
                 show_main_window(app);
@@ -950,6 +1353,7 @@ pub fn run() {
             get_launch_state,
             restart_service,
             get_desktop_config,
+            list_network_adapters,
             save_desktop_config,
             quit_app
         ])

@@ -3,10 +3,6 @@
 .codex
 node_modules
 client/dist
-desktop/dist
-desktop/src-tauri/target
-desktop/src-tauri/binaries
-.pkg-cache
 logs
 *.log
 *.tmp

@@ -23,6 +23,9 @@ export interface BandwidthLimit {
   bytesPerSecond?: number | null;
 }
 
+export type TransferModePreference = 'auto' | 'p2p' | 'relay' | 'direct';
+export type TransferRoute = 'p2p' | 'direct' | 'relay';
+
 export interface TransferProgress {
   id: string;
   direction: 'send' | 'receive';
@@ -34,10 +37,12 @@ export interface TransferProgress {
   done: boolean;
   cancellable?: boolean;
   cancelled?: boolean;
+  failed?: boolean;
   peerId?: string;
   downloadUrl?: string;
   needsUserSave?: boolean;
-  mode?: 'p2p' | 'direct' | 'relay';
+  requestedMode?: TransferModePreference;
+  mode?: TransferRoute;
   statusText?: string;
   speedBytesPerSecond?: number;
   averageBytesPerSecond?: number;
@@ -50,13 +55,14 @@ export interface TransferProgress {
 export type SignalingMessage =
   | { type: 'hello'; device: DeviceRecord; serverIps: string[]; serverMode?: ServerMode }
   | { type: 'device-list'; devices: DeviceRecord[]; mdnsPeers?: DeviceRecord[] }
-  | { type: 'desktop-session-close'; reason?: string }
-  | { type: 'offer'; from: string; to?: string; transferId?: string; description: RTCSessionDescriptionInit; fileMeta?: FileMeta }
-  | { type: 'answer'; from: string; to?: string; transferId?: string; description: RTCSessionDescriptionInit }
-  | { type: 'ice-candidate'; from: string; to?: string; transferId?: string; candidate: RTCIceCandidateInit }
+  | { type: 'service-relocating'; targetUrl: string; delayMs: number; issuedAt: number }
   | { type: 'p2p-transfer-request'; from: string; to?: string; fileMeta: FileMeta }
   | { type: 'p2p-transfer-accept'; from: string; to?: string; transferId: string }
   | { type: 'p2p-transfer-reject'; from: string; to?: string; transferId: string; reason?: string }
+  | { type: 'p2p-transfer-cancel'; from: string; to?: string; transferId: string; reason?: string }
+  | { type: 'offer'; from: string; to?: string; transferId: string; description: RTCSessionDescriptionInit; fileMeta?: FileMeta }
+  | { type: 'answer'; from: string; to?: string; transferId: string; description: RTCSessionDescriptionInit }
+  | { type: 'ice-candidate'; from: string; to?: string; transferId: string; candidate: RTCIceCandidateInit }
   | { type: 'transfer-accept'; from: string; to?: string; transferId: string }
   | { type: 'transfer-reject'; from: string; to?: string; transferId: string; reason?: string }
   | { type: 'direct-transfer-request'; from: string; to?: string; fileMeta: FileMeta }
@@ -86,6 +92,7 @@ export interface FileMeta {
   size: number;
   type: string;
   lastModified: number;
+  requestedMode?: TransferModePreference;
   packageType?: 'crosslan-zip';
   packageCount?: number;
   batchId?: string;
@@ -93,7 +100,10 @@ export interface FileMeta {
   batchTotal?: number;
 }
 
-export type TransferBatchMeta = Pick<FileMeta, 'batchId' | 'batchIndex' | 'batchTotal'>;
+export type TransferBatchMeta = Pick<
+  FileMeta,
+  'batchId' | 'batchIndex' | 'batchTotal' | 'packageType' | 'packageCount'
+>;
 
 export interface BatchTransferSummary {
   batchId: string;

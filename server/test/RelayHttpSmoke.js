@@ -16,6 +16,7 @@ const baseUrl = `http://127.0.0.1:${port}`;
 const output = [];
 const server = spawn(process.execPath, ['src/index.js'], {
   cwd: serverDir,
+  windowsHide: true,
   env: {
     ...process.env,
     PORT: String(port),

@@ -1,15 +1,21 @@
 export class RelayBufferPool {
-  constructor({ targetBytes, highWaterBytes, lowWaterBytes, totalBytes }) {
-    if (![targetBytes, highWaterBytes, lowWaterBytes, totalBytes].every(value => Number.isSafeInteger(value) && value > 0)) {
+  constructor({ targetBytes, highWaterBytes, lowWaterBytes, totalBytes, refillBytes }) {
+    const resolvedRefillBytes = refillBytes ?? Math.max(1, highWaterBytes - lowWaterBytes);
+    if (![targetBytes, highWaterBytes, lowWaterBytes, totalBytes, resolvedRefillBytes].every(value => Number.isSafeInteger(value) && value > 0)) {
       throw new TypeError('Relay buffer limits must be positive safe integers.');
     }
     if (!(lowWaterBytes <= targetBytes && targetBytes <= highWaterBytes && highWaterBytes <= totalBytes)) {
       throw new RangeError('Relay buffer limits must satisfy low <= target <= high <= total.');
     }
+    if (resolvedRefillBytes > highWaterBytes) {
+      throw new RangeError('Relay refill size must not exceed the high water limit.');
+    }
 
     this.targetBytes = targetBytes;
     this.highWaterBytes = highWaterBytes;
     this.lowWaterBytes = lowWaterBytes;
+    this.refillBytes = resolvedRefillBytes;
+    this.resumeWaterBytes = Math.max(lowWaterBytes, highWaterBytes - resolvedRefillBytes);
     this.totalBytes = totalBytes;
     this.totalBufferedBytes = 0;
     this.sessions = new Map();
@@ -115,6 +121,8 @@ export class RelayBufferPool {
       targetBufferBytes: this.targetBytes,
       highWaterBytes: this.highWaterBytes,
       lowWaterBytes: this.lowWaterBytes,
+      refillBytes: this.refillBytes,
+      resumeWaterBytes: this.resumeWaterBytes,
       totalBufferBytes: this.totalBytes,
       totalBufferedBytes: this.totalBufferedBytes,
       backpressured: state.highWaterBackpressured || state.waitingWriters > 0
@@ -136,7 +144,7 @@ export class RelayBufferPool {
 
   #refreshBackpressure(state) {
     const sessionBuffered = state.bufferedBytes + state.reservedBytes;
-    if (state.highWaterBackpressured && sessionBuffered <= this.lowWaterBytes) {
+    if (state.highWaterBackpressured && sessionBuffered <= this.resumeWaterBytes) {
       state.highWaterBackpressured = false;
     } else if (!state.highWaterBackpressured && sessionBuffered >= this.highWaterBytes) {
       state.highWaterBackpressured = true;

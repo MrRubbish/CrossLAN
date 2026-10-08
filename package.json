@@ -1,6 +1,6 @@
 {
   "name": "crosslan",
-  "version": "1.0.5",
+  "version": "1.0.14",
   "private": true,
   "description": "Low-resource LAN WebRTC file transfer PWA.",
   "scripts": {
@@ -13,7 +13,11 @@
     "desktop:build": "npm --workspace desktop run tauri:build",
     "desktop:check": "npm --workspace desktop run check"
   },
-  "workspaces": ["client", "server", "desktop"],
+  "workspaces": [
+    "client",
+    "server",
+    "desktop"
+  ],
   "devDependencies": {
     "concurrently": "^8.2.2",
     "esbuild": "^0.23.1",

@@ -30,12 +30,9 @@ function initializeDesktopSession(): void {
     cache: 'no-store',
     keepalive: true
   }).catch(() => {
-    // A normal non-desktop page or a service that does not support this control
-    // should continue to work without showing a lifecycle error.
+    // Normal browser deployments do not enable desktop lifecycle control.
   });
 
-  // Let the tray launcher reopen the page after this browser tab is closed.
-  // This endpoint only clears the launcher UI state; it never stops the service.
   let notifiedPageClose = false;
   const notifyPageClose = () => {
     if (notifiedPageClose) return;

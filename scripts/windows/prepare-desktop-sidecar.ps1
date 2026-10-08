@@ -101,4 +101,16 @@ if ($binary.Length -le 0) {
   throw "The generated sidecar is empty: $binaryPath"
 }
 
+$previousTestExecutable = $env:CROSSLAN_TEST_SERVER_EXE
+try {
+  $env:CROSSLAN_TEST_SERVER_EXE = $binaryPath
+  & $nodePath --test (Join-Path $root 'server\test\RelayDownloadHttp.test.js')
+  if ($LASTEXITCODE -ne 0) {
+    throw "Packaged server HTTP regression tests failed with exit code $LASTEXITCODE"
+  }
+}
+finally {
+  $env:CROSSLAN_TEST_SERVER_EXE = $previousTestExecutable
+}
+
 Write-Host "Prepared CrossLAN desktop sidecar: $binaryPath"

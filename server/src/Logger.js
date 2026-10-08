@@ -51,8 +51,8 @@ export class Logger {
   }
 
   ready(...args) {
-    // The desktop wrapper uses this marker to know when the sidecar is ready.
-    // It must reach stdout, but should not add routine startup noise to the log file.
+    // Keep the readiness marker visible to process supervisors without adding
+    // routine startup noise to the configured log file.
     this.write('INFO', args, 'log', true);
   }
 

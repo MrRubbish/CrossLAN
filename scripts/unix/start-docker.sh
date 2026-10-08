@@ -4,6 +4,7 @@ set -Eeuo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PORT="${CROSSLAN_PORT:-${PORT:-6100}}"
 RELAY_BUFFER_MB="${CROSSLAN_RELAY_BUFFER_MB:-256}"
+HOST_SAVE_DIR="${CROSSLAN_HOST_SAVE_DIR:-${HOME}/Downloads/CrossLAN}"
 ADVERTISED_IP="${CROSSLAN_ADVERTISED_IP:-}"
 
 usage() {
@@ -13,6 +14,7 @@ Usage: bash scripts/unix/start-docker.sh [options]
 Options:
   --port PORT               Host and container service port; default 6100.
   --relay-buffer-mb MB      Relay memory budget; default 256.
+  --save-dir PATH           Host direct-save directory; default ~/Downloads/CrossLAN.
   --advertised-ip IP        LAN address shown to other devices.
   --foreground              Keep Docker Compose attached.
   -h, --help                Show this help.
@@ -24,6 +26,7 @@ while (($# > 0)); do
   case "$1" in
     --port) PORT="${2:?Missing value for --port}"; shift ;;
     --relay-buffer-mb) RELAY_BUFFER_MB="${2:?Missing value for --relay-buffer-mb}"; shift ;;
+    --save-dir) HOST_SAVE_DIR="${2:?Missing value for --save-dir}"; shift ;;
     --advertised-ip) ADVERTISED_IP="${2:?Missing value for --advertised-ip}"; shift ;;
     --foreground) FOREGROUND=1 ;;
     -h|--help) usage; exit 0 ;;
@@ -42,6 +45,8 @@ fi
 
 export PORT
 export CROSSLAN_RELAY_BUFFER_MB="$RELAY_BUFFER_MB"
+mkdir -p "$HOST_SAVE_DIR"
+export CROSSLAN_HOST_SAVE_DIR="$HOST_SAVE_DIR"
 if [[ -n "$ADVERTISED_IP" ]]; then
   export CROSSLAN_ADVERTISED_IP="$ADVERTISED_IP"
 else
@@ -55,4 +60,5 @@ else
   docker compose up -d --build
   echo "CrossLAN Docker service started in the background."
   echo "URL: http://<PC-LAN-IP>:$PORT"
+  echo "Direct-save directory: $HOST_SAVE_DIR"
 fi
