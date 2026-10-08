@@ -18,3 +18,9 @@ client/dist/
 !/desktop/src-tauri/binaries/.gitkeep
 __pycache__/
 *.pyc
+/.dockerignore
+/Dockerfile
+/docker-compose.yml
+/scripts/unix/*-docker.sh
+/scripts/windows/*-docker.cmd
+/scripts/windows/*-docker.ps1

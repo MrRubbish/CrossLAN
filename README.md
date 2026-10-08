@@ -1,11 +1,10 @@
 # CrossLAN（中文说明）
 
-最后更新时间：2026年7月19日
+最后更新时间：2026年9月5日
 
 ---
 
 ![Node.js](https://img.shields.io/badge/Node.js-20%2B-339933?logo=nodedotjs&logoColor=white)
-![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
 ![License](https://img.shields.io/github/license/MrRubbish/CrossLAN)
 
 > 在同一局域网内，用浏览器在手机和电脑之间传输文件。
@@ -23,11 +22,9 @@ CrossLAN 会根据文件大小和接收目标自动选择传输路线：
 
 ## 目录
 
-- [已验证范围](#已验证范围)
 - [传输方式](#传输方式)
 - [安装](#安装)
   - [Windows Node.js 部署](#windows-nodejs-部署)
-  - [Docker 部署](#docker-部署)
 - [使用](#使用)
   - [发送文件](#发送文件)
   - [批量传输](#批量传输)
@@ -35,32 +32,8 @@ CrossLAN 会根据文件大小和接收目标自动选择传输路线：
   - [取消与任务清理](#取消与任务清理)
   - [上传限速](#上传限速)
 - [参数及配置](#参数及配置)
-- [测试](#测试)
 - [项目结构](#项目结构)
 - [已实现的能力](#已实现的能力)
-- [常见问题](#常见问题)
-- [已知限制](#已知限制)
-
-## 已验证范围
-
-截至 `2026-07-19`，验证结果分为两类。
-
-### 实际设备验证
-
-- Windows Node.js 作为服务主机，Windows PC 和 Android Chromium 浏览器接入同一局域网。
-- 单文件 WebRTC 传输、GB 级文件服务主机直存和普通浏览器 Relay 接收。
-- Windows 作为服务主机的 Node.js 部署和后台启动。
-- Windows Docker Desktop 构建、运行、设备发现和宿主机保存目录映射。
-
-### 自动化验证
-
-- 小文件 ZIP 批次、大小文件混合选择、传输排队和批次接收授权。
-- WebRTC、HTTP 直存和 Relay 的取消、背压与资源清理。
-- TypeScript 检查、客户端传输测试、服务端单元测试和真实 HTTP 流式烟测。
-
-自动化覆盖不等同于所有浏览器组合均已完成真机验收。混合大小文件批次的最新接收授权修改已通过回归测试，但仍应在发布前用目标手机浏览器复测一次。
-
-macOS 和 Linux 尚未做实机验收，因此不把原生 Node.js 脚本列为推荐安装方式；这两个平台建议使用 Docker。
 
 ## 传输方式
 
@@ -83,8 +56,6 @@ cd CrossLAN
 ```
 
 ### Windows Node.js 部署
-
-这是当前验证最完整的部署方式。
 
 要求：
 
@@ -155,70 +126,6 @@ scripts\windows\uninstall-autostart.cmd
 %USERPROFILE%\Downloads\CrossLAN
 ```
 
-### Docker 部署
-
-Docker 用于统一 Windows、macOS 和 Linux 的运行环境。当前完成实机验证的是 Windows Docker Desktop；macOS/Linux 使用前请确认 Docker 有权访问映射的宿主机目录。
-
-以下命令均在已克隆的 CrossLAN 项目目录中执行。
-
-#### Windows PowerShell
-
-```powershell
-$env:CROSSLAN_HOST_SAVE_DIR = "$env:USERPROFILE\Downloads\CrossLAN"
-docker compose up -d --build
-```
-
-也可以使用项目脚本：
-
-```powershell
-.\scripts\windows\start-docker.ps1
-```
-
-指定端口、保存目录和服务主机局域网 IP：
-
-```powershell
-.\scripts\windows\start-docker.ps1 `
-  -Port 6100 `
-  -SaveDir "D:\CrossLAN" `
-  -AdvertisedIp 192.168.1.20
-```
-
-#### macOS/Linux
-
-```bash
-export CROSSLAN_HOST_SAVE_DIR="$HOME/Downloads/CrossLAN"
-docker compose up -d --build
-```
-
-也可以使用只负责 Docker Compose 的辅助脚本：
-
-```bash
-bash scripts/unix/start-docker.sh --port 6100
-```
-
-#### 停止和更新
-
-停止：
-
-```bash
-docker compose down
-```
-
-代码更新后重新构建：
-
-```bash
-docker compose up -d --build
-```
-
-容器内的 `/data/CrossLAN` 会映射到 `CROSSLAN_HOST_SAVE_DIR`。未设置该变量时，默认映射到项目目录下的 `docker-data`。
-
-如果服务主机有多个网卡，或者主机通过 `localhost` 打开页面，请显式设置对外显示的局域网 IP：
-
-```powershell
-$env:CROSSLAN_ADVERTISED_IP = "192.168.1.20"
-docker compose up -d --build
-```
-
 ## 使用
 
 ### 发送文件
@@ -280,8 +187,7 @@ docker compose up -d --build
 | --- | --- | --- |
 | `PORT` | `6100` | HTTP 和 WebSocket 服务端口 |
 | `CROSSLAN_SAVE_DIR` | `~/Downloads/CrossLAN` | Node.js 服务主机直存目录 |
-| `CROSSLAN_HOST_SAVE_DIR` | `./docker-data` | Docker 映射到 `/data/CrossLAN` 的宿主机目录 |
-| `CROSSLAN_ADVERTISED_IP` | 自动判断 | Docker 或多网卡环境中向其他设备显示的服务主机 IP |
+| `CROSSLAN_ADVERTISED_IP` | 自动判断 | 多网卡环境中向其他设备显示的服务主机 IP |
 | `CROSSLAN_RELAY_TOTAL_BUFFER_MB` | `256` | 所有 Relay 会话共享的内存预算 |
 | `CROSSLAN_RELAY_BUFFER_MB` | `256` | 兼容旧配置的总内存预算别名 |
 | `CROSSLAN_RELAY_TARGET_MB` | `32` | Relay 正常目标缓冲 |
@@ -313,53 +219,25 @@ npm start
 
 不要使用端口 `6000`，Chromium 系浏览器通常将其列为不安全端口并拒绝访问。项目默认使用 `6100`。
 
-## 测试
-
-发布前检查：
-
-```powershell
-npm run check
-npm run build
-npm --workspace server run test:relay-http
-```
-
-测试内容：
-
-- TypeScript 类型检查。
-- WebRTC `64 MiB` 路由边界、协商分块、预读、接收 ACK、批次元数据、背压恢复和取消测试。
-- Relay 缓冲池容量、共享预算、等待唤醒和关闭测试。
-- WebSocket 信令路由、重复连接和传输关系测试。
-- 真实 HTTP Relay：并行上传和下载 `24 MB` 数据，校验字节、SHA-256、最大缓冲和完成状态。
-- 真实 HTTP 直存：写入 `8 MB` 数据，校验保存文件内容并清理临时目录。
-- Vite 生产构建。
-- Docker Compose 配置展开与宿主机保存目录映射检查。
-
-真实 HTTP 烟测会自行启动临时端口，不依赖正在运行的 CrossLAN 服务。
-
 ## 项目结构
 
 ```text
 CrossLAN/
 ├─ client/
-│  ├─ src/
-│  │  ├─ App.vue                     页面、设备和传输编排
-│  │  ├─ identity/DeviceIdentity.ts  浏览器设备标识
-│  │  ├─ signaling/                  WebSocket 客户端
-│  │  ├─ storage/                    IndexedDB 设备记录
-│  │  └─ transfer/                   WebRTC、批次和背压
-│  └─ test/                          客户端传输测试
+│  └─ src/
+│     ├─ App.vue                     页面、设备和传输编排
+│     ├─ identity/DeviceIdentity.ts  浏览器设备标识
+│     ├─ signaling/                  WebSocket 客户端
+│     ├─ storage/                    IndexedDB 设备记录
+│     └─ transfer/                   WebRTC、批次和背压
 ├─ server/
-│  ├─ src/
-│  │  ├─ index.js                    HTTP、直存和 Relay
-│  │  ├─ signaling/                  设备连接和信令路由
-│  │  ├─ relay/RelayBufferPool.js    共享内存缓冲池
-│  │  └─ Logger.js                   服务日志
-│  └─ test/                          服务端测试和 HTTP 烟测
-├─ scripts/
-│  ├─ windows/                       Windows Node/Docker 启停脚本
-│  └─ unix/                          macOS/Linux Docker 辅助脚本
-├─ docker-compose.yml
-└─ Dockerfile
+│  └─ src/
+│     ├─ index.js                    HTTP、直存和 Relay
+│     ├─ signaling/                  设备连接和信令路由
+│     ├─ relay/RelayBufferPool.js    共享内存缓冲池
+│     └─ Logger.js                   服务日志
+└─ scripts/
+   └─ windows/                       Windows Node.js 启停脚本
 ```
 
 ## 已实现的能力
@@ -376,68 +254,3 @@ CrossLAN/
 - 默认不限速、手动 `Mbps` 上传限速。
 - 中文/英文界面和系统/亮色/深色外观。
 - Windows 后台启动、停止、重启和当前用户开机启动脚本。
-- Docker Compose 构建、后台运行、保存目录映射和服务主机 IP 配置。
-
-## 常见问题
-
-### 其他设备打不开 CrossLAN
-
-检查：
-
-1. 地址是否使用服务主机局域网 IP，而不是 `127.0.0.1`。
-2. 两台设备是否连接同一个局域网。
-3. Windows 防火墙是否允许当前端口。
-4. 路由器是否开启访客网络隔离或 AP 隔离。
-5. 服务是否仍在运行。
-
-可以在服务主机执行：
-
-```powershell
-netstat -ano | findstr :6100
-```
-
-### Docker 中服务主机 IP 不正确
-
-设置：
-
-```powershell
-$env:CROSSLAN_ADVERTISED_IP = "服务主机局域网 IP"
-docker compose up -d --build
-```
-
-### 手机出现“保留文件”或下载确认
-
-这是移动浏览器的安全和下载策略。CrossLAN 可以发起下载，但不能绕过浏览器或操作系统的最终保存确认。
-
-### 下载被 IDM 等工具接管
-
-发送到服务主机时选择直存设备卡。发送到普通浏览器设备时会进入浏览器下载流程，第三方下载工具仍可能接管。
-
-### 修改代码后页面还是旧版本
-
-重新构建：
-
-```powershell
-npm run build
-```
-
-PC 使用 `Ctrl+F5`；手机关闭旧标签页后重新打开。
-
-### Docker 无法拉取 `node:20-alpine`
-
-这是 Docker Hub 网络或代理问题。先让 Docker Desktop 能访问 Docker Hub，再重新执行：
-
-```bash
-docker compose up -d --build
-```
-
-## 已知限制
-
-- macOS/Linux Docker 尚未完成本项目的实机验收。
-- 混合大小文件批次的最新授权修改已有自动化回归覆盖，但尚未完成当前版本的目标手机真机复测。
-- 普通浏览器的大文件 Relay 仍经过服务主机，不是完全 P2P。
-- 普通浏览器的最终保存路径由浏览器和操作系统控制。
-- 移动系统可能暂停后台网页，后台传输只能尽力保持。
-- 当前不支持断点续传。
-- 批量 ZIP 不自动解压。
-- 默认 HTTP 适合可信局域网，不适合直接暴露到公网。

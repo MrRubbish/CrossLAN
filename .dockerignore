@@ -1,9 +1,0 @@
-.git
-.agents
-.codex
-node_modules
-client/dist
-logs
-*.log
-*.tmp
-*.bak
