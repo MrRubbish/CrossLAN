@@ -2,23 +2,23 @@
   <main class="min-h-screen bg-mist text-ink">
     <ShareDialog v-if="shareDialogOpen" :addresses="shareAddresses" :labels="t.share" @close="shareDialogOpen = false" />
     <div v-if="serviceRelocation" class="fixed inset-0 z-50 grid place-items-center bg-mist/95 px-5" role="status" aria-live="polite">
-      <section class="w-full max-w-sm rounded-md border border-line bg-panel p-6 text-center shadow-xl">
+      <section class="w-full max-w-sm rounded-md bg-panel p-6 text-center shadow-xl">
         <div v-if="!serviceRelocation.failed" class="mx-auto h-9 w-9 animate-spin rounded-full border-2 border-line border-t-teal" aria-hidden="true"></div>
         <h2 class="mt-4 text-lg font-800">{{ t.relocatingService }}</h2>
         <p class="mt-2 text-sm text-ink/55">
           {{ serviceRelocation.failed ? t.relocationFailed : t.relocationWaiting }}
         </p>
         <p class="mt-3 break-all text-xs text-ink/45">{{ serviceRelocation.targetUrl }}</p>
-        <a v-if="serviceRelocation.failed" class="tap mt-4 inline-flex border border-teal/30 bg-teal/10 px-4 py-2 text-sm font-800 text-teal" :href="serviceRelocation.redirectUrl">
+        <a v-if="serviceRelocation.failed" class="tap mt-4 inline-flex bg-teal/10 px-4 py-2 text-sm font-800 text-teal" :href="serviceRelocation.redirectUrl">
           {{ t.openNewAddress }}
         </a>
       </section>
     </div>
-    <section class="mx-auto max-w-5xl px-4 pb-10 pt-[env(safe-area-inset-top)] sm:px-6">
-      <header class="site-header flex flex-wrap items-center justify-between gap-4 py-5">
+    <section class="transfer-page">
+      <header class="site-header">
         <div>
-          <h1 class="text-2xl font-800" translate="no">CrossLAN</h1>
-          <p class="text-sm text-ink/60">{{ localStatus }}</p>
+          <h1 class="page-title" translate="no">CrossLAN</h1>
+          <p class="muted">{{ localStatus }}</p>
         </div>
         <PageToolbar
           v-model:theme="themePreference"
@@ -35,26 +35,22 @@
         </button>
       </header>
 
-      <div class="grid gap-4 lg:grid-cols-[1fr_340px]">
-        <section class="panel p-4 sm:p-5">
-          <div class="mb-4 flex items-center justify-between gap-3">
-            <div>
-              <p class="label">{{ t.devices }}</p>
-              <h2 class="text-xl font-750">{{ t.selectTarget }}</h2>
-            </div>
-            <button class="tap border border-line px-3 text-sm font-700" @click="requestRefresh">{{ t.refresh }}</button>
-          </div>
+      <div class="workspace">
+        <section class="devices-section" :aria-label="t.selectTarget">
+          <header class="section-heading">
+            <h2>{{ t.selectTarget }}</h2>
+            <button class="ui-surface ui-control icon-button" type="button" :title="t.refresh" :aria-label="t.refresh" @click="requestRefresh"><RefreshCw :size="18" aria-hidden="true" /></button>
+          </header>
 
-          <div v-if="targetDevices.length === 0" class="rounded-md border border-dashed border-line p-6 text-center text-sm text-ink/55">
+          <p v-if="targetDevices.length === 0" class="muted empty-state">
             {{ t.emptyDevices }}
-          </div>
+          </p>
 
-          <div v-else class="grid gap-3 sm:grid-cols-2">
+          <div v-else class="device-grid">
             <label
               v-for="device in targetDevices"
               :key="device.id"
-              class="tap relative flex min-h-[9rem] flex-col items-stretch justify-start border bg-mist/60 p-4 text-left hover:bg-panel"
-              :class="deviceCardClass(device)"
+              class="tap relative flex min-h-[9rem] flex-col items-stretch justify-start bg-panel p-4 text-left hover:bg-teal/8"
             >
               <div class="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
                 <div class="min-w-0">
@@ -80,62 +76,50 @@
           </div>
         </section>
 
-        <aside class="space-y-4">
-          <section class="panel p-4">
-            <div class="flex items-center justify-between gap-2">
-              <p class="label">{{ t.transfers }}</p>
-              <button v-if="progressItems.length" class="tap border border-line px-3 py-1 text-xs font-800" type="button" @click="clearTransfers">{{ t.clearTransfers }}</button>
+        <aside class="transfer-sidebar">
+          <section class="limit-section" :aria-label="t.uploadLimit">
+            <header class="section-heading"><h2>{{ t.uploadLimit }}</h2></header>
+            <div class="ui-segments" role="group" :aria-label="t.uploadLimit">
+              <label><input v-model="bandwidthMode" name="bandwidth" value="unlimited" type="radio" /><span>{{ t.unlimited }}</span></label>
+              <label><input v-model="bandwidthMode" name="bandwidth" value="manual" type="radio" /><span>{{ t.manual }}</span></label>
             </div>
-            <div v-if="progressItems.length === 0" class="mt-3 text-sm text-ink/55">{{ t.noTransfers }}</div>
-            <div v-for="item in progressItems" :key="item.id" class="transfer-task mt-3 rounded-md border border-line p-3" :data-transfer-id="item.id" :data-mode="item.mode" :data-done="item.done" :data-cancelled="Boolean(item.cancelled)" :data-bytes="item.bytesTransferred">
-              <div class="flex items-center justify-between gap-3 text-sm font-700">
-                <span class="min-w-0 truncate">{{ item.fileName }}</span>
-                <div class="flex shrink-0 items-center gap-2">
-                  <button v-if="item.cancellable && !item.done" class="tap border border-coral/30 bg-coral/8 px-2 py-1 text-xs font-800 text-coral" type="button" @click="cancelTransfer(item)">{{ t.cancel }}</button>
-                  <span>{{ Math.round(percent(item)) }}%</span>
-                </div>
-              </div>
-              <div class="mt-2 h-2 overflow-hidden rounded-md bg-line">
-                <div class="h-full rounded-md bg-teal" :style="{ width: `${percent(item)}%` }"></div>
-              </div>
-              <p class="mt-2 text-xs text-ink/50">
-                {{ item.direction === 'send' ? t.send : t.receive }} | {{ modeLabel(item.mode) }} | {{ formatBytes(item.bytesTransferred) }} / {{ formatBytes(item.totalBytes) }}
-              </p>
-              <p class="mt-1 text-xs text-ink/45">
-                {{ formatSpeedLine(item) }}
-              </p>
-              <p v-if="item.statusText" class="mt-1 break-all text-xs" :class="item.done && item.bytesTransferred < item.totalBytes ? 'text-coral' : 'text-ink/45'">{{ displayStoredMessage(item.statusText) }}</p>
-              <a v-if="item.downloadUrl" class="tap mt-2 inline-flex border border-teal/30 bg-teal/10 px-3 py-2 text-xs font-800 text-teal" :href="item.downloadUrl" :download="item.fileName" target="_blank" rel="noopener" @click="logDownloadOpen(item)">{{ t.openDownload }}</a>
-            </div>
+            <label class="limit-input">
+              <input v-model.number="manualLimitMbps" :disabled="bandwidthMode !== 'manual'" type="number" min="1" :aria-label="t.uploadLimit" />
+              <span>{{ t.mbps }}</span>
+            </label>
+            <p class="muted limit-hint">{{ t.uploadLimitHint }}</p>
           </section>
 
-          <section v-if="showStorageSettings" class="panel p-4">
-            <p class="label">{{ t.storage }}</p>
-            <h2 class="text-lg font-750">{{ t.saveDirectory }}</h2>
+          <section v-if="showStorageSettings" class="storage-section" :aria-label="t.saveDirectory">
+            <header class="section-heading"><h2>{{ t.saveDirectory }}</h2></header>
             <p class="mt-2 text-xs text-ink/50">{{ t.storageHint }}</p>
-            <input v-model="saveDirInput" class="mt-3 w-full rounded-md border border-line bg-panel px-5 py-2 text-sm text-ink" placeholder="/data/CrossLAN" />
+            <input v-model="saveDirInput" class="mt-3 w-full rounded-md bg-panel px-5 py-2 text-sm text-ink" placeholder="/data/CrossLAN" />
             <button class="tap mt-3 w-full bg-ink px-3 py-2 text-sm font-800 text-mist" @click="saveStorageDir">{{ t.savePath }}</button>
             <p class="mt-2 break-all text-xs" :class="storageStatusOk ? 'text-teal' : 'text-coral'">{{ displayStoredMessage(storageMessage) }}</p>
           </section>
 
-          <section class="panel p-4">
-            <div class="flex items-center justify-between gap-2">
-              <div>
-                <p class="label">{{ t.network }}</p>
-                <h2 class="text-lg font-750">{{ t.speedLimit }}</h2>
+          <section class="tasks-section" :aria-label="t.transferTasks">
+            <header class="section-heading">
+              <h2>{{ t.transferTasks }}</h2>
+              <button class="ui-surface ui-control icon-button" :disabled="!progressItems.some(item => item.done)" type="button" :title="t.clearFinishedTransfers" :aria-label="t.clearFinishedTransfers" @click="clearTransfers"><ListX :size="18" aria-hidden="true" /></button>
+            </header>
+            <p v-if="progressItems.length === 0" class="muted empty-state">{{ t.noTransfers }}</p>
+            <article v-for="item in progressItems" :key="item.id" class="transfer-task" :data-transfer-id="item.id" :data-mode="item.mode" :data-done="item.done" :data-cancelled="Boolean(item.cancelled)" :data-bytes="item.bytesTransferred">
+              <div class="task-heading">
+                <h3>{{ item.fileName }}</h3>
+                <button v-if="item.cancellable && !item.done" class="ui-surface ui-control icon-button" type="button" :title="t.cancel" :aria-label="`${t.cancel}: ${item.fileName}`" @click="cancelTransfer(item)"><X :size="18" aria-hidden="true" /></button>
+                <Check v-else-if="isTransferSuccessful(item)" :size="19" class="success" aria-hidden="true" />
               </div>
-            </div>
-            <div class="mt-4 space-y-3">
-              <div class="ui-segments" role="group" :aria-label="t.speedLimit">
-                <label><input v-model="bandwidthMode" name="bandwidth" value="unlimited" type="radio" /><span>{{ t.unlimited }}</span></label>
-                <label><input v-model="bandwidthMode" name="bandwidth" value="manual" type="radio" /><span>{{ t.manual }}</span></label>
+              <progress :value="percent(item)" max="100" :aria-label="item.fileName"></progress>
+              <div class="task-metrics">
+                <span>{{ item.direction === 'send' ? t.send : t.receive }} · {{ modeLabel(item.mode) }}</span>
+                <strong>{{ Math.round(percent(item)) }}%</strong>
               </div>
-              <label class="flex items-center overflow-hidden rounded-md border border-line bg-panel">
-                <input v-model.number="manualLimitMbps" :disabled="bandwidthMode !== 'manual'" type="number" min="1" class="min-w-0 flex-1 border-0 bg-transparent px-5 py-2 text-sm outline-none disabled:bg-line/30" />
-                <span class="border-l border-line px-3 text-xs font-800 text-ink/55">{{ t.mbps }}</span>
-              </label>
-              <p class="text-xs text-ink/45">{{ t.uploadLimitHint }}</p>
-            </div>
+              <p class="muted">{{ formatBytes(item.bytesTransferred) }} / {{ formatBytes(item.totalBytes) }}</p>
+              <p class="muted task-speed">{{ formatSpeedLine(item) }}</p>
+              <p v-if="item.statusText" class="task-status" :class="item.done && !isTransferSuccessful(item) ? 'failure' : 'muted'">{{ displayStoredMessage(item.statusText) }}</p>
+              <a v-if="item.downloadUrl" class="ui-surface ui-control task-download" :href="item.downloadUrl" :download="item.fileName" target="_blank" rel="noopener" @click="logDownloadOpen(item)"><Download :size="17" aria-hidden="true" />{{ t.openDownload }}</a>
+            </article>
           </section>
         </aside>
       </div>
@@ -145,7 +129,7 @@
 
 <script setup lang="ts">
 import NoSleep from 'nosleep.js';
-import { QrCode } from 'lucide-vue-next';
+import { Check, Download, ListX, QrCode, RefreshCw, X } from 'lucide-vue-next';
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import PageToolbar from './components/PageToolbar.vue';
 import ShareDialog from './components/ShareDialog.vue';
@@ -185,12 +169,14 @@ const ZIP_CHUNK_SIZE = 4 * 1024 * 1024;
 const textEncoder = new TextEncoder();
 const messages = {
   zh: {
+    uploadLimit: '上传限速', transferTasks: '传输任务', clearFinishedTransfers: '清空已结束任务',
     toolbar: { tools: '网页设置', status: '连接状态', theme: '外观', language: '界面语言', system: '跟随系统', systemShort: '系统', auto: '自动', light: '浅色', dark: '深色', chinese: '简体中文', english: 'English' },
     share: { title: '扫码打开网页', address: '访问地址', close: '关闭', copy: '复制地址', copied: '已复制', unavailable: '暂无可分享的局域网地址', loading: '正在生成二维码...', failed: '二维码生成失败', copyFailed: '复制失败' },
     relocatingService: '服务正在切换网络', relocationWaiting: '正在等待新地址就绪，连接恢复后会自动跳转。', relocationFailed: '暂时无法连接新地址，请确认设备与所选网卡位于同一局域网。', openNewAddress: '打开新地址',
     local: '本机', connecting: '正在连接信令服务', online: '在线', offline: '离线', themeSystem: '系统', themeLight: '亮色', themeDark: '深色', themeTitle: '切换外观', devices: '局域网设备', selectTarget: '选择目标设备', refresh: '刷新', emptyDevices: '在同一局域网的另一台设备打开 CrossLAN，它会出现在这里。', deviceId: '设备 ID', lastSeen: '最后在线', transfers: '传输', noTransfers: '还没有传输任务。', clearTransfers: '清空任务', cancel: '取消', send: '发送', receive: '接收', openDownload: '打开下载', storage: '存储', saveDirectory: '服务主机保存目录', storageHint: '发送到运行 CrossLAN 服务的这台主机的大文件会直接保存到这里。Docker 通常映射到 /data/CrossLAN。', directSaveReceiver: '本机作为服务主机接收', directSaveReceiverHint: '只在运行 CrossLAN 服务的 PC 上开启；开启后其他设备发来的大文件会直存，不再触发浏览器/IDM 下载。', savePath: '保存路径', network: '网络', speedLimit: '速度限制', uploadLimitHint: '限速仅限制本机作为发送方的上传速度；浏览器下载速度由接收端和网络决定。', currentSpeed: '当前', averageSpeed: '平均', peakSpeed: '峰值', elapsed: '用时', unlimited: '不限速', manual: '手动', mbps: 'Mbps', direct: '直存', browserDownload: '浏览器下载', browserDownloadMode: '浏览器接收', p2p: 'P2P', measuring: '测速中', receivePrompt: '接收', receiveLargePrompt: '接收大文件', receiveBatchPrompt: '接收这批文件', receiverRejected: '接收方已拒绝文件。', waitingSender: '已接受，等待发送方...', waitingLink: '已接受，等待下载链接...', receiveComplete: '接收完成', savingDisk: '正在写入服务主机磁盘...', downloadReady: '下载已准备好。如果没有自动打开，请点“打开下载”。', sentDownloadManager: '已交给浏览器下载管理器。', waitConfirm: '等待对方确认...', waitPhoneConfirm: '等待接收端确认...', savedToPc: '已保存到服务主机', preparingPhone: '正在为接收端准备浏览器下载...', linkSentPhone: '下载链接已发送到接收端。', loadStorage: '正在读取保存目录...', loadStorageFailed: '读取保存目录失败。', saveStorageFailed: '保存目录失败。', current: '当前', saved: '已保存', parseFailed: '无法解析服务器响应。', uploadHttpFailed: '上传失败', uploadNetworkFailed: '上传失败：无法连接到 CrossLAN 服务。', cancelled: '传输已取消。', remoteCancelled: '对方已取消传输。', confirmTimeout: '等待对方确认超时。', failed: '传输失败。', duplicateSending: '这个文件正在传输中，已沿用现有任务。', duplicateIncoming: '相同文件已有接收任务，已忽略重复请求。', receivingRelay: '正在通过内存流式中继传输...', packagingBatch: '正在打包批量文件...', batchLabel: '批量文件'
   },
   en: {
+    uploadLimit: 'Upload limit', transferTasks: 'Transfers', clearFinishedTransfers: 'Clear finished tasks',
     toolbar: { tools: 'Page settings', status: 'Connection status', theme: 'Appearance', language: 'Interface language', system: 'Follow system', systemShort: 'System', auto: 'Auto', light: 'Light', dark: 'Dark', chinese: '简体中文', english: 'English' },
     share: { title: 'Open via QR code', address: 'Web address', close: 'Close', copy: 'Copy address', copied: 'Copied', unavailable: 'No LAN address available', loading: 'Generating QR code...', failed: 'Unable to generate QR code', copyFailed: 'Unable to copy address' },
     relocatingService: 'Switching service network', relocationWaiting: 'Waiting for the new address. This page will redirect automatically when it is ready.', relocationFailed: 'The new address is not reachable yet. Check that this device is on the selected adapter network.', openNewAddress: 'Open new address',
@@ -1610,10 +1596,6 @@ function isLikelyServiceHostBrowser(device: DeviceRecord, hostIp?: string) {
   return Boolean(device.canDirectSave && (hostCandidates.has(device.ip) || hostCandidates.has(device.id)));
 }
 
-function deviceCardClass(device: DeviceRecord) {
-  return 'border-line hover:border-teal/40';
-}
-
 function displayDeviceName(device: DeviceRecord) {
   if (isServiceHostEntry(device)) return device.ip;
   return identity.getDisplayName(device);
@@ -2537,6 +2519,10 @@ function cleanup() {
   signaling.close();
 }
 
+function isTransferSuccessful(item: TransferProgress) {
+  return item.done && !item.cancelled && !item.failed && item.bytesTransferred >= item.totalBytes;
+}
+
 function percent(item: TransferProgress) {
   if (!item.totalBytes) return 0;
   const value = (item.bytesTransferred / item.totalBytes) * 100;
@@ -2588,3 +2574,46 @@ function createTransferId() {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 </script>
+
+<style scoped>
+.transfer-page { max-width: 1400px; margin: auto; padding: max(28px, env(safe-area-inset-top)) 28px 40px; }
+.site-header { display: flex; align-items: center; justify-content: space-between; gap: 24px; margin-bottom: 28px; }
+.page-title { font-size: 26px; font-weight: 800; line-height: 1.25; }
+.workspace { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(320px, 1fr); gap: 32px; }
+.workspace > *, .transfer-sidebar > section { min-width: 0; }
+.section-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 40px; margin-bottom: 16px; }
+.section-heading h2 { font-size: 18px; font-weight: 750; }
+.device-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.device-grid > label { border-radius: var(--control-radius, 10px); }
+.device-grid > label:focus-within { outline: 2px solid rgb(var(--color-teal)); outline-offset: 2px; }
+.ui-control { gap: 8px; border: 0; }
+.icon-button { width: 40px; height: 40px; padding: 0; flex-shrink: 0; }
+.icon-button:disabled { opacity: .4; cursor: not-allowed; background: rgb(var(--color-panel)); }
+.muted { color: rgb(var(--color-ink) / .6); font-size: 12px; line-height: 1.65; }
+.empty-state { padding: 20px 0; }
+.transfer-sidebar > section + section { margin-top: 28px; padding-top: 24px; }
+.limit-input { display: flex; align-items: center; border-radius: var(--control-radius, 10px); margin-top: 12px; overflow: hidden; background: rgb(var(--color-panel)); }
+.limit-input:focus-within { outline: 2px solid rgb(var(--color-teal)); outline-offset: 2px; }
+.limit-input input { width: 100%; min-width: 0; background: transparent; padding: 12px 20px; font-size: 14px; outline: none; }
+.limit-input span { padding: 0 20px; font-size: 12px; font-weight: 700; color: rgb(var(--color-ink) / .6); }
+.limit-input input:disabled { opacity: .5; }
+.limit-hint { margin-top: 12px; }
+.transfer-task { background: rgb(var(--color-panel)); border-radius: var(--control-radius, 10px); padding: 20px; margin-bottom: 12px; }
+.task-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 40px; }
+.task-heading h3 { min-width: 0; font-size: 15px; font-weight: 700; overflow-wrap: anywhere; }
+.transfer-task progress { width: 100%; height: 8px; display: block; margin: 12px 0; border-radius: var(--control-radius, 10px); overflow: hidden; appearance: none; }
+.transfer-task progress::-webkit-progress-bar { background: rgb(var(--color-line)); }
+.transfer-task progress::-webkit-progress-value { background: rgb(var(--color-teal)); border-radius: var(--control-radius, 10px); }
+.transfer-task progress::-moz-progress-bar { background: rgb(var(--color-teal)); }
+.task-metrics { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; font-size: 12px; margin-bottom: 4px; }
+.task-metrics span { min-width: 0; overflow-wrap: anywhere; }
+.task-metrics strong { flex-shrink: 0; font-variant-numeric: tabular-nums; }
+.task-speed { margin-top: 2px; overflow-wrap: anywhere; }
+.task-status { font-size: 12px; margin-top: 10px; overflow-wrap: anywhere; }
+.success { color: rgb(var(--color-teal)); flex-shrink: 0; }
+.failure { color: rgb(var(--color-coral)); }
+.task-download { margin-top: 12px; max-width: 100%; }
+@media (max-width: 1100px) { .site-header { align-items: flex-start; flex-wrap: wrap; } .device-grid { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 760px) { .transfer-page { padding: max(20px, env(safe-area-inset-top)) 16px 32px; } .workspace { grid-template-columns: minmax(0, 1fr); gap: 28px; } }
+@media (max-width: 640px) { .site-header { display: grid; gap: 18px 12px; } }
+</style>

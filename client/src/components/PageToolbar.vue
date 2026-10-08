@@ -92,7 +92,8 @@ onUnmounted(() => disposeLocalePicker?.());
 </script>
 
 <style scoped>
-.page-toolbar { --toolbar-width: 144px; display: flex; max-width: 100%; align-items: center; flex-wrap: wrap; gap: 12px 24px; }
+.page-toolbar { --toolbar-width: 144px; display: flex; max-width: 100%; align-items: center; flex-wrap: wrap; gap: 12px; }
+.page-toolbar .ui-surface { border: 0; }
 .toolbar-actions { display: flex; align-items: center; gap: 12px; }
 .share-toolbar-button { width: 40px; padding: 0; }
 .toolbar-theme { width: var(--toolbar-width); }

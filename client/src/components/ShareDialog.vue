@@ -126,7 +126,7 @@ async function copyAddress(): Promise<void> {
   max-height: calc(100dvh - 32px);
   padding: 0;
   overflow: auto;
-  border: 1px solid rgb(var(--color-line));
+  border: 0;
   border-radius: var(--control-popup-radius);
   background: rgb(var(--color-panel));
   color: rgb(var(--color-ink));
@@ -155,7 +155,7 @@ async function copyAddress(): Promise<void> {
   min-width: 0;
   height: 40px;
   padding: 0 10px;
-  border: 1px solid rgb(var(--color-line));
+  border: 0;
   border-radius: var(--control-radius);
   background: rgb(var(--color-mist));
   color: inherit;
@@ -168,7 +168,7 @@ async function copyAddress(): Promise<void> {
   height: 40px;
   flex: 0 0 auto;
   place-items: center;
-  border: 1px solid rgb(var(--color-line));
+  border: 0;
   border-radius: var(--control-radius);
   background: transparent;
   color: inherit;

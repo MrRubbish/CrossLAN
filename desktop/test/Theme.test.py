@@ -55,7 +55,7 @@ def main():
     bootstrap = BOOTSTRAP.replace('__API__', '/@fs/' + api_path.as_posix())
 
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(channel='msedge', headless=True)
+        browser = playwright.chromium.launch(channel='msedge', headless=True, args=['--no-proxy-server'])
         try:
             page = browser.new_page(viewport={'width': 720, 'height': 680}, color_scheme='light')
             errors = []
@@ -88,7 +88,7 @@ def main():
             def choose_locale(value):
                 picker = page.locator('#locale')
                 picker.locator('summary').click()
-                picker.locator(f'label:has(input[value="{value}"])').click()
+                picker.locator(f'label:has(input[value="{value}"])').click(delay=150)
                 expect(picker.locator(f'input[value="{value}"]')).to_be_checked()
                 expect(picker).not_to_have_attribute('open', '')
                 expect(picker.locator('summary')).to_be_focused()

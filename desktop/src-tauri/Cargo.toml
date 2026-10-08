@@ -1,6 +1,6 @@
 [package]
 name = "crosslan-desktop"
-version = "1.0.14"
+version = "1.0.17"
 description = "CrossLAN desktop launcher"
 authors = ["MrRubbish"]
 edition = "2021"

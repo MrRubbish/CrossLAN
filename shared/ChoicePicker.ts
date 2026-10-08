@@ -42,6 +42,12 @@ export function bindChoicePicker(picker: HTMLDetailsElement, onChange: (value: s
     if (event.target instanceof HTMLInputElement && event.detail > 0) closeAfterChange();
   }
 
+  function preserveOptionFocus(event: MouseEvent): void {
+    const option = event.target instanceof Element ? event.target.closest('.ui-choice-option') : null;
+    // Label text blurs the trigger on mouse-down, before release activates the radio.
+    if (event.button === 0 && option && picker.contains(option)) event.preventDefault();
+  }
+
   function keydown(event: KeyboardEvent): void {
     if (event.target === trigger && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
       event.preventDefault();
@@ -72,6 +78,7 @@ export function bindChoicePicker(picker: HTMLDetailsElement, onChange: (value: s
   picker.addEventListener('toggle', toggle);
   picker.addEventListener('change', change);
   picker.addEventListener('click', click);
+  picker.addEventListener('mousedown', preserveOptionFocus);
   picker.addEventListener('keydown', keydown);
   picker.addEventListener('focusout', focusout);
   document.addEventListener('pointerdown', outside);
@@ -83,6 +90,7 @@ export function bindChoicePicker(picker: HTMLDetailsElement, onChange: (value: s
     picker.removeEventListener('toggle', toggle);
     picker.removeEventListener('change', change);
     picker.removeEventListener('click', click);
+    picker.removeEventListener('mousedown', preserveOptionFocus);
     picker.removeEventListener('keydown', keydown);
     picker.removeEventListener('focusout', focusout);
     document.removeEventListener('pointerdown', outside);

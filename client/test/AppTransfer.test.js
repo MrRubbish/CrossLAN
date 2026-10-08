@@ -31,6 +31,18 @@ test('switching language translates stored UI messages without changing raw erro
 });
 
 // Exercise the production handlers with controlled clocks and network effects.
+test('the task success indicator uses terminal flags and bytes, not the translated status text', () => {
+  const { isTransferSuccessful } = loadFunctions(['isTransferSuccessful'], {});
+  const complete = { done: true, bytesTransferred: 100, totalBytes: 100, statusText: 'Receive complete' };
+  assert.equal(isTransferSuccessful(complete), true);
+  assert.equal(isTransferSuccessful({ ...complete, statusText: '接收完成' }), true);
+  assert.equal(isTransferSuccessful({ ...complete, done: false }), false);
+  assert.equal(isTransferSuccessful({ ...complete, cancelled: true }), false);
+  assert.equal(isTransferSuccessful({ ...complete, failed: true }), false);
+  assert.equal(isTransferSuccessful({ ...complete, bytesTransferred: 99 }), false);
+  assert.equal(isTransferSuccessful({ ...complete, bytesTransferred: 0, totalBytes: 0 }), true);
+});
+
 function loadFunctions(names, globals) {
   const nodes = ast.statements.filter(node => ts.isFunctionDeclaration(node) && names.includes(node.name.text));
   assert.equal(nodes.length, names.length);

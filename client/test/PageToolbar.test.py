@@ -17,7 +17,7 @@ def main():
     output.mkdir(parents=True, exist_ok=True)
 
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(channel='msedge', headless=True)
+        browser = playwright.chromium.launch(channel='msedge', headless=True, args=['--no-proxy-server'])
         try:
             context = browser.new_context(viewport={'width': 1280, 'height': 850}, locale='zh-CN', service_workers='block')
             page = context.new_page()
@@ -46,7 +46,7 @@ def main():
             def choose_locale(value):
                 if not picker.evaluate('(element) => element.open'):
                     locale.click()
-                picker.locator(f'label:has(input[value="{value}"])').click()
+                picker.locator(f'label:has(input[value="{value}"])').click(delay=150)
                 expect(picker.locator(f'input[value="{value}"]')).to_be_checked()
                 expect(picker).not_to_have_attribute('open', '')
                 expect(locale).to_be_focused()
@@ -54,7 +54,7 @@ def main():
             def check_status_badges():
                 for badge in page.locator('.toolbar-badge').all():
                     expect(badge).to_have_css('cursor', 'default')
-                    expect(badge).to_have_css('border-top-style', 'solid')
+                    expect(badge).to_have_css('border-top-width', '0px')
                     expect(badge).to_have_css('border-radius', '10px')
                     expect(badge).to_have_css('justify-content', 'center')
                     assert badge.bounding_box()['height'] == theme.bounding_box()['height'] == 40
@@ -121,7 +121,6 @@ def main():
             expect(html).to_have_attribute('lang', 'en-US')
             expect(page.get_by_role('heading', name='Select target device')).to_be_visible()
             expect(page.locator('.toolbar-connection')).to_have_text('Online')
-            expect(page.get_by_text(re.compile(r'^Current: '))).to_be_visible()
             assert page.evaluate("localStorage.getItem('crosslan:locale')") == 'en-US'
             assert locale.get_attribute('title') == 'Interface language: English'
             theme.focus()
@@ -170,7 +169,7 @@ def main():
                 assert all(bounds[index]['x'] + bounds[index]['width'] <= bounds[index + 1]['x']
                            for index in range(len(bounds) - 1))
                 for control in controls:
-                    assert control.evaluate('(element) => element.clientHeight === 38')
+                    assert control.evaluate('(element) => element.clientHeight === 40')
                     expect(control).to_have_css('border-radius', '10px')
                     expect(control).to_have_css('justify-content', 'center')
                     assert control.evaluate('(element) => element.scrollWidth <= element.clientWidth')
@@ -289,6 +288,19 @@ def main():
             assert not storage_requests, 'Desktop-managed browser clients must not load the service host save path'
             managed_page.screenshot(path=str(output / 'mobile-desktop-managed.png'), full_page=True, animations='disabled')
             managed.close()
+            touch = browser.new_context(viewport={'width': 390, 'height': 844}, locale='zh-CN',
+                                        has_touch=True, is_mobile=True, service_workers='block')
+            touch_page = touch.new_page()
+            touch_page.goto(args.url, wait_until='networkidle')
+            touch_picker = touch_page.locator('.locale-picker')
+            for value, language in [('en-US', 'en-US'), ('zh-CN', 'zh-CN'), ('system', 'zh-CN')]:
+                touch_picker.locator('summary').tap()
+                touch_picker.locator(f'label:has(input[value="{value}"])').tap()
+                expect(touch_picker.locator(f'input[value="{value}"]')).to_be_checked()
+                expect(touch_page.locator('html')).to_have_attribute('lang', language)
+                expect(touch_picker).not_to_have_attribute('open', '')
+                assert touch_page.evaluate("localStorage.getItem('crosslan:locale')") == value
+            touch.close()
             print(f'Toolbar, language persistence, system updates, independent settings, and responsive layout tests passed. Screenshots: {output}')
         finally:
             browser.close()
